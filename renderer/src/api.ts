@@ -58,7 +58,7 @@ export type RoomMember = {
 
 export type AuditLog = {
   id: string;
-  roomId: string;
+  roomId: string | null;
   action: string;
   actorId: string;
   actorDisplayName: string;
@@ -260,6 +260,13 @@ export const api = {
     q.set("limit", String(opts?.limit ?? 50));
     if (opts?.before) q.set("before", opts.before);
     return getJson<AuditLog[]>(`/rooms/${encodeURIComponent(roomId)}/audit?${q.toString()}`);
+  },
+  listMyAudit: (opts?: { before?: string; limit?: number; scope?: "home" | "all" }) => {
+    const q = new URLSearchParams();
+    q.set("limit", String(opts?.limit ?? 50));
+    q.set("scope", String(opts?.scope ?? "home"));
+    if (opts?.before) q.set("before", opts.before);
+    return getJson<AuditLog[]>(`/audit?${q.toString()}`);
   },
   listChannelActivity: (roomId: string) =>
     getJson<ChannelActivity[]>(`/rooms/${encodeURIComponent(roomId)}/channels/activity`),

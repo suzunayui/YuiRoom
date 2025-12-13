@@ -169,6 +169,11 @@ export default function App() {
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
 
+  const [homeAuditOpen, setHomeAuditOpen] = useState(false);
+  const [homeAuditLogs, setHomeAuditLogs] = useState<AuditLog[]>([]);
+  const [homeAuditBusy, setHomeAuditBusy] = useState(false);
+  const [homeAuditError, setHomeAuditError] = useState<string | null>(null);
+
   const [memberPane, setMemberPane] = useState<RoomMember[]>([]);
   const [memberPaneLoading, setMemberPaneLoading] = useState(false);
   const [memberPaneError, setMemberPaneError] = useState<string | null>(null);
@@ -1124,6 +1129,29 @@ export default function App() {
     }
   }
 
+  async function openHomeAudit() {
+    if (homeAuditBusy) return;
+    setHomeAuditOpen(true);
+    setHomeAuditBusy(true);
+    setHomeAuditError(null);
+    try {
+      const logs = await api.listMyAudit({ limit: 50, scope: "home" });
+      setHomeAuditLogs(logs);
+    } catch (e: any) {
+      setHomeAuditError(e?.message ?? "failed");
+      setHomeAuditLogs([]);
+    } finally {
+      setHomeAuditBusy(false);
+    }
+  }
+
+  function closeHomeAudit() {
+    if (homeAuditBusy) return;
+    setHomeAuditOpen(false);
+    setHomeAuditError(null);
+    setHomeAuditLogs([]);
+  }
+
   function closeConfirmModal() {
     if (inviteBusy) return;
     setConfirmModal(null);
@@ -1385,6 +1413,26 @@ export default function App() {
                   title="フレンド申請"
                 >
                   フレンドを追加する
+                </button>
+                <button
+                  onClick={() => void openHomeAudit()}
+                  disabled={homeAuditBusy}
+                  style={{
+                    width: "100%",
+                    padding: "10px 10px",
+                    borderRadius: 8,
+                    border: "1px solid #40444b",
+                    background: "transparent",
+                    color: "#dcddde",
+                    cursor: "pointer",
+                    fontWeight: 900,
+                    fontSize: 12,
+                    marginTop: 10,
+                    opacity: homeAuditBusy ? 0.7 : 1,
+                  }}
+                  title="監査ログ"
+                >
+                  監査ログ
                 </button>
                 {homeError && !addFriendOpen && (
                   <div style={{ color: "#ff7a7a", fontSize: 12, marginTop: 10 }}>{homeError}</div>
@@ -2897,6 +2945,96 @@ export default function App() {
               />
             </label>
             {joinError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{joinError}</div>}
+          </div>
+        </Modal>
+      )}
+
+      {authed && homeAuditOpen && (
+        <Modal
+          title="監査ログ"
+          onClose={closeHomeAudit}
+          footer={
+            <>
+              <button
+                onClick={closeHomeAudit}
+                disabled={homeAuditBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #40444b",
+                  background: "transparent",
+                  color: "#dcddde",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  opacity: homeAuditBusy ? 0.7 : 1,
+                }}
+              >
+                閉じる
+              </button>
+              <button
+                onClick={() => void openHomeAudit()}
+                disabled={homeAuditBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#7289da",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 800,
+                  opacity: homeAuditBusy ? 0.7 : 1,
+                }}
+              >
+                更新
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: "grid", gap: 10, color: "#dcddde" }}>
+            {homeAuditError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{homeAuditError}</div>}
+            {homeAuditBusy ? (
+              <div style={{ color: "#8e9297", fontSize: 12 }}>読み込み中…</div>
+            ) : homeAuditLogs.length === 0 ? (
+              <div style={{ color: "#8e9297", fontSize: 12 }}>なし</div>
+            ) : (
+              <div style={{ display: "grid", gap: 6 }}>
+                {homeAuditLogs.slice(0, 50).map((l) => (
+                  <div
+                    key={l.id}
+                    style={{
+                      border: "1px solid #40444b",
+                      background: "#202225",
+                      borderRadius: 10,
+                      padding: "8px 10px",
+                      display: "grid",
+                      gap: 4,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12 }}>
+                      <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {l.actorDisplayName} ({l.actorId})
+                      </div>
+                      <div style={{ color: "#8e9297", flexShrink: 0 }}>{new Date(l.created_at).toLocaleString()}</div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#b9bbbe" }}>
+                      {(() => {
+                        const meta = l.meta && typeof l.meta === "object" ? (l.meta as any) : null;
+                        const extra: string[] = [];
+                        if (meta?.name) extra.push(`name=${String(meta.name)}`);
+                        if (meta?.reason) extra.push(`reason=${String(meta.reason)}`);
+                        if (meta?.requestId) extra.push(`request=${String(meta.requestId)}`);
+                        if (meta?.threadId) extra.push(`thread=${String(meta.threadId)}`);
+                        if (meta?.inviteCode) extra.push(`code=${String(meta.inviteCode)}`);
+                        if (meta?.channelId) extra.push(`channel=${String(meta.channelId)}`);
+                        if (meta?.byOwner) extra.push("byOwner");
+                        return `${l.action}${l.targetId ? ` (${l.targetId})` : ""}${extra.length ? ` - ${extra.join(" ")}` : ""}`;
+                      })()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </Modal>
       )}

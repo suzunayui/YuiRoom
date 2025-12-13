@@ -83,6 +83,28 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
+  backup:
+    build:
+      context: .
+      dockerfile: deploy/backup/Dockerfile
+    container_name: yuiroom-backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BACKUP_INTERVAL_SEC: "86400" # 24h
+      BACKUP_KEEP: "30"
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: yuiroom
+      PGDATABASE: yuiroom
+      SECRETS_DIR: /run/secrets
+      BACKUP_DIR: /backups
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - ./backups:/backups
+
 volumes:
   pgdata:
   caddy_data:

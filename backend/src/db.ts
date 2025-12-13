@@ -234,7 +234,7 @@ export async function initDb() {
     -- audit logs (room owner can view)
     CREATE TABLE IF NOT EXISTS audit_logs (
       id TEXT PRIMARY KEY,
-      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      room_id TEXT REFERENCES rooms(id) ON DELETE CASCADE,
       actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       action TEXT NOT NULL,
       target_type TEXT,
@@ -242,6 +242,9 @@ export async function initDb() {
       meta JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    ALTER TABLE audit_logs
+      ALTER COLUMN room_id DROP NOT NULL;
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_room_created_at
       ON audit_logs(room_id, created_at DESC);

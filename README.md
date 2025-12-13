@@ -27,4 +27,20 @@
 - `docker compose ps`
 - `docker compose logs -f caddy`
 - `docker compose logs -f backend`
+
+## Backup / Restore (DB + secrets)
+
+バックアップにはDBダンプと `./secrets/` が含まれます（= 機密情報を含むので取り扱い注意）。
+
+- 作成: `bash deploy/backup.sh`（`./backups/` に `yuiroom-backup-*.tar.gz`）
+- 復元: `bash deploy/restore.sh ./backups/yuiroom-backup-<...>.tar.gz`
+
+### 自動バックアップ（docker compose）
+
+`docker-compose.yml` に `backup` サービスがあります（PostgresへTCP接続して `pg_dump` します）。
+
+- 保存先: `./backups/`
+- 設定:
+  - `BACKUP_INTERVAL_SEC`（秒、デフォルト24h）
+  - `BACKUP_KEEP`（保持数、デフォルト30、`0`で無制限）
 チャットアプリだよ！

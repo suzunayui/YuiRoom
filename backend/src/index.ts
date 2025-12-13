@@ -663,17 +663,17 @@ function validateInviteCode(code: unknown) {
 }
 
 async function writeAuditLog(entry: {
-  roomId: string;
+  roomId?: string | null;
   actorId: string;
   action: string;
   targetType?: string | null;
   targetId?: string | null;
   meta?: any;
 }) {
-  const roomId = String(entry.roomId || "");
   const actorId = String(entry.actorId || "");
   const action = String(entry.action || "").trim();
-  if (!roomId || !actorId || !action) return;
+  if (!actorId || !action) return;
+  const roomId = entry.roomId == null ? null : String(entry.roomId);
   const targetType = entry.targetType != null ? String(entry.targetType) : null;
   const targetId = entry.targetId != null ? String(entry.targetId) : null;
   const meta = entry.meta === undefined ? null : entry.meta;
@@ -903,6 +903,14 @@ app.delete("/friends/:userId", requireAuth, async (req, res) => {
   wsBroadcastUser(me, { type: "home_updated" });
   wsBroadcastUser(other, { type: "home_updated" });
 
+  void writeAuditLog({
+    roomId: null,
+    actorId: me,
+    action: "friend_delete",
+    targetType: "user",
+    targetId: other,
+  });
+
   res.json({ ok: true });
 });
 
@@ -962,6 +970,15 @@ app.post("/friends/requests", requireAuth, async (req, res) => {
   // realtime: update both sides (incoming/outgoing)
   wsBroadcastUser(toUserId, { type: "home_updated" });
   wsBroadcastUser(me, { type: "home_updated" });
+
+  void writeAuditLog({
+    roomId: null,
+    actorId: me,
+    action: "friend_request_send",
+    targetType: "user",
+    targetId: toUserId,
+    meta: { requestId: id },
+  });
 
   res.status(201).json({ ok: true, id });
 });
@@ -1023,6 +1040,17 @@ app.post("/friends/requests/:requestId/accept", requireAuth, async (req, res) =>
     wsBroadcastUser(me, { type: "home_updated" });
     if (otherUserId) wsBroadcastUser(otherUserId, { type: "home_updated" });
 
+    if (otherUserId) {
+      void writeAuditLog({
+        roomId: null,
+        actorId: me,
+        action: "friend_request_accept",
+        targetType: "user",
+        targetId: otherUserId,
+        meta: { requestId },
+      });
+    }
+
     res.json({ ok: true });
   } catch (e) {
     await pool.query("ROLLBACK");
@@ -1051,6 +1079,17 @@ app.post("/friends/requests/:requestId/reject", requireAuth, async (req, res) =>
   wsBroadcastUser(me, { type: "home_updated" });
   const other = String(row.from_user_id || "");
   if (other) wsBroadcastUser(other, { type: "home_updated" });
+
+  if (other) {
+    void writeAuditLog({
+      roomId: null,
+      actorId: me,
+      action: "friend_request_reject",
+      targetType: "user",
+      targetId: other,
+      meta: { requestId },
+    });
+  }
 
   res.json({ ok: true });
 });
@@ -1110,6 +1149,15 @@ app.post("/dm/threads", requireAuth, async (req, res) => {
     if ((ex2.rowCount ?? 0) > 0) return res.json({ ok: true, threadId: ex2.rows[0].id });
     throw e;
   }
+
+  void writeAuditLog({
+    roomId: null,
+    actorId: me,
+    action: "dm_thread_create",
+    targetType: "user",
+    targetId: other,
+    meta: { threadId },
+  });
 
   res.status(201).json({ ok: true, threadId });
 });
@@ -1930,6 +1978,51 @@ app.get("/rooms/:roomId/audit", requireAuth, async (req, res) => {
     rows.map((r) => ({
       id: r.id,
       roomId,
+      action: r.action,
+      actorId: r.actor_id,
+      actorDisplayName: r.actor_name,
+      targetType: r.target_type ?? null,
+      targetId: r.target_id ?? null,
+      meta: r.meta ?? null,
+      created_at: r.created_at,
+    }))
+  );
+});
+
+// personal audit logs (includes room + home actions where you are actor/target)
+app.get("/audit", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+
+  const limitRaw = req.query.limit;
+  const limit = Math.min(200, Math.max(1, Number(limitRaw ?? 50) || 50));
+
+  const beforeRaw = typeof req.query.before === "string" ? req.query.before : "";
+  let before: Date | null = null;
+  if (beforeRaw) {
+    const d = new Date(beforeRaw);
+    if (!Number.isNaN(d.getTime())) before = d;
+  }
+
+  const scope = typeof req.query.scope === "string" ? String(req.query.scope) : "home";
+  const onlyHome = scope === "home";
+
+  const { rows } = await pool.query(
+    `SELECT l.id, l.room_id, l.action, l.target_type, l.target_id, l.meta, l.created_at,
+            l.actor_id, u.display_name AS actor_name
+     FROM audit_logs l
+     JOIN users u ON u.id = l.actor_id
+     WHERE (l.actor_id=$1 OR (l.target_type='user' AND l.target_id=$1))
+       AND ($2::timestamptz IS NULL OR l.created_at < $2)
+       AND ($3::boolean = false OR l.room_id IS NULL)
+     ORDER BY l.created_at DESC
+     LIMIT $4`,
+    [me, before, onlyHome, limit]
+  );
+
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      roomId: r.room_id ? String(r.room_id) : null,
       action: r.action,
       actorId: r.actor_id,
       actorDisplayName: r.actor_name,

@@ -95,6 +95,9 @@ services:
     environment:
       BACKUP_INTERVAL_SEC: "86400" # 24h
       BACKUP_KEEP: "30"
+      VERIFY_BACKUP: "1"
+      VERIFY_DB_NAME: yuiroom_verify
+      KEEP_VERIFY_DB: "0"
       PGHOST: postgres
       PGPORT: "5432"
       PGUSER: yuiroom

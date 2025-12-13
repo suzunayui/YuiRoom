@@ -10,6 +10,8 @@ ENV BACKUP_DIR=/backups
 ENV BACKUP_KEEP=30
 ENV BACKUP_INTERVAL_SEC=86400
 ENV SECRETS_DIR=/run/secrets
+ENV VERIFY_BACKUP=0
+ENV VERIFY_DB_NAME=yuiroom_verify
+ENV KEEP_VERIFY_DB=0
 
 CMD ["/usr/local/bin/backup-loop.sh"]
-

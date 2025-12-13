@@ -43,4 +43,5 @@
 - 設定:
   - `BACKUP_INTERVAL_SEC`（秒、デフォルト24h）
   - `BACKUP_KEEP`（保持数、デフォルト30、`0`で無制限）
+  - `VERIFY_BACKUP=1` でバックアップ直後に `yuiroom_verify` DBへリストアして検証（終わったら削除）
 チャットアプリだよ！

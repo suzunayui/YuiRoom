@@ -2450,7 +2450,7 @@ export default function App() {
                           opacity: dmSearchBusy || !dmSearchQ.trim() ? 0.7 : 1,
                         }}
                       >
-                        讀懃ｴ｢
+                        検索
                       </button>
                     </>
                   }
@@ -2519,7 +2519,7 @@ export default function App() {
                             </div>
                             <div style={{ fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
                               {renderTextWithLinksAndHighlights(
-                                it.content.length > 180 ? `${it.content.slice(0, 180)}窶ｦ` : it.content,
+                                it.content.length > 180 ? `${it.content.slice(0, 180)}…` : it.content,
                                 dmSearchQ
                               )}
                             </div>
@@ -2545,7 +2545,7 @@ export default function App() {
                           opacity: dmSearchBusy ? 0.7 : 1,
                         }}
                       >
-                        {dmSearchBusy ? "隱ｭ縺ｿ霎ｼ縺ｿ荳ｭ窶ｦ" : "縺輔ｉ縺ｫ隱ｭ縺ｿ霎ｼ繧"}
+                        {dmSearchBusy ? "読み込み中…" : "さらに読み込む"}
                       </button>
                     )}
                   </div>

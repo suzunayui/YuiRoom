@@ -27,7 +27,8 @@ export function ServerList({
       flexDirection: "column",
       alignItems: "center",
       padding: "12px 0",
-      height: "100vh",
+      height: "100dvh",
+      minHeight: "100vh",
       overflowY: "auto"
     }}>
       {homeId && (

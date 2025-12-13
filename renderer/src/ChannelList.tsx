@@ -47,7 +47,8 @@ export function ChannelList({
       padding: "16px 0",
       display: "flex",
       flexDirection: "column",
-      height: "100vh",
+      height: "100dvh",
+      minHeight: "100vh",
       overflow: "hidden"
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12, padding: "0 16px" }}>

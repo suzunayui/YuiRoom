@@ -1841,7 +1841,7 @@ export default function App() {
     <div className={`app ${authed ? "authed" : ""}`}>
       {authed ? (
         // Discord風レイアウト
-        <div style={{ display: "flex", height: "100vh", background: "#36393f", overflowX: "hidden" }}>
+        <div style={{ display: "flex", height: "100dvh", minHeight: "100vh", background: "#36393f", overflowX: "hidden" }}>
           {!isNarrow && rooms && (
             <ServerList
               rooms={rooms}
@@ -1859,7 +1859,8 @@ export default function App() {
                 width: 260,
                 background: "#2f3136",
                 borderRight: "1px solid #202225",
-                height: "100vh",
+                height: "100dvh",
+                minHeight: "100vh",
                 display: "flex",
                 flexDirection: "column",
               }}
@@ -2200,7 +2201,8 @@ export default function App() {
                 color: "#dcddde",
                 display: "flex",
                 flexDirection: "column",
-                height: "100vh",
+                height: "100dvh",
+                minHeight: "100vh",
               }}
             >
               <div
@@ -2392,7 +2394,13 @@ export default function App() {
                 ))}
               </div>
 
-              <div style={{ padding: "12px 16px", borderTop: "1px solid #202225" }}>
+              <div
+                style={{
+                  padding: "12px 16px",
+                  paddingBottom: "calc(12px + env(safe-area-inset-bottom))",
+                  borderTop: "1px solid #202225",
+                }}
+              >
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                   <input
                     value={dmText}
@@ -2573,7 +2581,7 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div style={{ display: "flex", flex: 1, height: "100vh" }}>
+            <div style={{ display: "flex", flex: 1, height: "100dvh", minHeight: "100vh" }}>
               <MessageArea
                 roomId={tree?.room?.id ?? null}
                 selectedChannelId={selectedChannelId}

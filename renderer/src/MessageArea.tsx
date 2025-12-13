@@ -798,7 +798,8 @@ export function MessageArea({
       color: "#dcddde",
       display: "flex",
       flexDirection: "column",
-      height: "100vh"
+      height: "100dvh",
+      minHeight: "100vh",
     }}>
       {/* チャンネルヘッダー */}
       <div style={{
@@ -1215,7 +1216,7 @@ export function MessageArea({
       <div style={{
         padding: "16px",
         borderTop: "1px solid #202225",
-        paddingBottom: "24px" /* 下に余白を追加 */
+        paddingBottom: "calc(24px + env(safe-area-inset-bottom))",
       }}>
         {replyTo && (
           <div

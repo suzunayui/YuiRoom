@@ -15,8 +15,8 @@ services:
         if [ ! -s /secrets/auth_secret ]; then
           openssl rand -hex 48 | tr -d "\n" > /secrets/auth_secret;
         fi
-        pw="$(cat /secrets/postgres_password)";
-        echo "postgres://yuiroom:${pw}@postgres:5432/yuiroom" > /secrets/database_url;
+        pw="$$(cat /secrets/postgres_password)";
+        echo "postgres://yuiroom:$${pw}@postgres:5432/yuiroom" > /secrets/database_url;
         # Make sure containers can read these files even when not running as root.
         chmod 0644 /secrets/postgres_password /secrets/auth_secret /secrets/database_url;
       '

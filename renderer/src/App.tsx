@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from "react";
-import "./app.css";
+import "./App.css";
 import { api } from "./api";
 import type { Room, RoomTree } from "./api";
 import { ServerList } from "./ServerList";

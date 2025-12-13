@@ -2303,7 +2303,7 @@ export default function App() {
                                 alignItems: "center",
                                 gap: 6,
                               }}
-                              title="繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ"
+                              title="リアクション"
                             >
                               <span>{r.emoji}</span>
                               <span style={{ opacity: 0.9 }}>{r.count}</span>
@@ -2323,9 +2323,9 @@ export default function App() {
                             fontSize: 12,
                             padding: 0,
                           }}
-                          title="繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ繧定ｿｽ蜉"
+                          title="リアクションを追加"
                         >
-                          繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ
+                          リアクション
                         </button>
                       </div>
 
@@ -2360,7 +2360,7 @@ export default function App() {
                                 placeItems: "center",
                               }}
                               title={emoji}
-                              aria-label={`繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ ${emoji}`}
+                              aria-label={`リアクション ${emoji}`}
                             >
                               {emoji}
                             </button>

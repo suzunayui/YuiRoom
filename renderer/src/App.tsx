@@ -2209,9 +2209,9 @@ export default function App() {
                       fontSize: 12,
                       fontWeight: 900,
                     }}
-                    title="讀懃ｴ｢ (Ctrl+K)"
+                    title="検索 (Ctrl+K)"
                   >
-                    讀懃ｴ｢
+                    検索
                   </button>
                 </div>
               )}
@@ -2415,7 +2415,7 @@ export default function App() {
 
               {dmSearchOpen && (
                 <Modal
-                  title="DM讀懃ｴ｢"
+                  title="DM検索"
                   onClose={closeDmSearch}
                   maxWidth="min(720px, 95vw)"
                   footer={

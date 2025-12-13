@@ -3,6 +3,7 @@ import { api } from "./api";
 import type { Message } from "./api";
 import { realtime } from "./realtime";
 import { Modal } from "./Modal";
+import { renderTextWithLinks } from "./linkify";
 
 type Props = {
   selectedChannelId: string | null;
@@ -876,7 +877,7 @@ export function MessageArea({
                       </div>
                     </div>
                   ) : (
-                    msg.content
+                    renderTextWithLinks(msg.content)
                   )}
                 </div>
 

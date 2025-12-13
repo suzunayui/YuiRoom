@@ -7,6 +7,7 @@ import { ChannelList } from "./ChannelList";
 import { MessageArea } from "./MessageArea";
 import { Modal } from "./Modal";
 import { MemberPane } from "./MemberPane";
+import { renderTextWithLinks } from "./linkify";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type { DmMessage, FriendRequests, FriendUser } from "./api";
 import type { RoomMember } from "./api";
@@ -2151,7 +2152,7 @@ export default function App() {
                         </span>
                       </div>
                       <div style={{ fontSize: 14, lineHeight: 1.4, wordWrap: "break-word" as any }}>
-                        {msg.content}
+                        {renderTextWithLinks(msg.content)}
                       </div>
                     </div>
                   </div>

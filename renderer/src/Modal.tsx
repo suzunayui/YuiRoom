@@ -39,11 +39,14 @@ export function Modal({ title, children, onClose, footer, maxWidth }: Props) {
       <div
         style={{
           width: maxWidth ?? "min(520px, 100%)",
+          maxHeight: "min(88vh, 860px)",
           background: "#2f3136",
           border: "1px solid #202225",
           borderRadius: 12,
           overflow: "hidden",
           boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
         <div
@@ -54,6 +57,7 @@ export function Modal({ title, children, onClose, footer, maxWidth }: Props) {
             alignItems: "center",
             justifyContent: "space-between",
             gap: 12,
+            flexShrink: 0,
           }}
         >
           <div style={{ fontWeight: 900, color: "#ffffff" }}>{title}</div>
@@ -75,7 +79,9 @@ export function Modal({ title, children, onClose, footer, maxWidth }: Props) {
           </button>
         </div>
 
-        <div style={{ padding: 16 }}>{children}</div>
+        <div className="darkScroll" style={{ padding: 16, overflowY: "auto", flex: "1 1 auto" }}>
+          {children}
+        </div>
 
         {footer && (
           <div
@@ -85,6 +91,7 @@ export function Modal({ title, children, onClose, footer, maxWidth }: Props) {
               display: "flex",
               justifyContent: "flex-end",
               gap: 10,
+              flexShrink: 0,
             }}
           >
             {footer}

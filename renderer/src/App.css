@@ -1,6 +1,8 @@
 :root {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   --app-height: 100vh;
+  --app-offset-top: 0px;
+  --app-offset-left: 0px;
 }
 
 * { box-sizing: border-box; }

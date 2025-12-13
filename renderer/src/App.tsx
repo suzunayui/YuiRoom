@@ -440,7 +440,11 @@ export default function App() {
         raf = 0;
         const vv = (window as any).visualViewport as VisualViewport | undefined;
         const h = Math.round((vv?.height ?? window.innerHeight) || window.innerHeight);
+        const top = Math.round(vv?.offsetTop ?? 0);
+        const left = Math.round(vv?.offsetLeft ?? 0);
         document.documentElement.style.setProperty("--app-height", `${h}px`);
+        document.documentElement.style.setProperty("--app-offset-top", `${top}px`);
+        document.documentElement.style.setProperty("--app-offset-left", `${left}px`);
       });
     }
 
@@ -1869,7 +1873,19 @@ export default function App() {
     <div className={`app ${authed ? "authed" : ""}`}>
       {authed ? (
         // Discord風レイアウト
-        <div style={{ display: "flex", height: "var(--app-height)", minHeight: "100vh", background: "#36393f", overflowX: "hidden" }}>
+        <div
+          style={{
+            display: "flex",
+            position: "fixed",
+            top: "var(--app-offset-top)",
+            left: "var(--app-offset-left)",
+            height: "var(--app-height)",
+            minHeight: "100vh",
+            width: "calc(100vw - var(--app-offset-left))",
+            background: "#36393f",
+            overflowX: "hidden",
+          }}
+        >
           {!isNarrow && rooms && (
             <ServerList
               rooms={rooms}

@@ -3,7 +3,7 @@ import { api } from "./api";
 import type { Message, RoomSearchMessage } from "./api";
 import { realtime } from "./realtime";
 import { Modal } from "./Modal";
-import { renderTextWithLinks } from "./linkify";
+import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "./linkify";
 
 type Props = {
   roomId?: string | null;
@@ -159,6 +159,7 @@ export function MessageArea({
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
+  const [searchScope, setSearchScope] = useState<"room" | "channel">("room");
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchItems, setSearchItems] = useState<RoomSearchMessage[]>([]);
@@ -170,6 +171,7 @@ export function MessageArea({
   const listRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const mentionRangeRef = useRef<{ start: number; end: number } | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const lastChannelIdRef = useRef<string | null>(null);
@@ -233,6 +235,7 @@ export function MessageArea({
     setSearchItems([]);
     setSearchHasMore(false);
     setSearchBefore(null);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
   }
 
   function closeSearch() {
@@ -250,7 +253,8 @@ export function MessageArea({
     setSearchError(null);
     try {
       const before = opts?.append ? searchBefore : null;
-      const r = await api.searchRoomMessages(roomId, q, { limit: 20, before });
+      const channelId = searchScope === "channel" ? selectedChannelId : null;
+      const r = await api.searchRoomMessages(roomId, q, { limit: 20, before, channelId });
       setSearchItems((prev) => (opts?.append ? [...prev, ...r.items] : r.items));
       setSearchHasMore(!!r.hasMore);
       const last = r.items[r.items.length - 1];
@@ -261,6 +265,18 @@ export function MessageArea({
       setSearchBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!roomId) return;
+    function onKeyDown(e: KeyboardEvent) {
+      const k = String(e.key || "").toLowerCase();
+      if (!((e.ctrlKey || e.metaKey) && k === "k")) return;
+      e.preventDefault();
+      openSearch();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [roomId]);
 
   useEffect(() => {
     if (!selectedChannelId) return;
@@ -1512,7 +1528,51 @@ export function MessageArea({
           }
         >
           <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setSearchScope("room")}
+                disabled={searchBusy}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #40444b",
+                  background: searchScope === "room" ? "#40444b" : "transparent",
+                  color: "#dcddde",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 900,
+                  opacity: searchBusy ? 0.7 : 1,
+                }}
+              >
+                ルーム
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchScope("channel")}
+                disabled={searchBusy || !selectedChannelId}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #40444b",
+                  background: searchScope === "channel" ? "#40444b" : "transparent",
+                  color: "#dcddde",
+                  cursor: !selectedChannelId ? "not-allowed" : "pointer",
+                  fontSize: 12,
+                  fontWeight: 900,
+                  opacity: searchBusy || !selectedChannelId ? 0.55 : 1,
+                }}
+                title={!selectedChannelId ? "チャンネルを選んでね" : "このチャンネルのみ検索"}
+              >
+                このチャンネル
+              </button>
+              <div style={{ marginLeft: "auto", color: "#8e9297", fontSize: 12, alignSelf: "center" }}>
+                Ctrl+K
+              </div>
+            </div>
+
             <input
+              ref={searchInputRef}
               value={searchQ}
               onChange={(e) => setSearchQ(e.target.value)}
               placeholder="キーワード（URLもOK）"
@@ -1568,7 +1628,10 @@ export function MessageArea({
                       </div>
                     </div>
                     <div style={{ fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
-                      {renderTextWithLinks(it.content.length > 180 ? `${it.content.slice(0, 180)}…` : it.content)}
+                      {renderTextWithLinksAndHighlights(
+                        it.content.length > 180 ? `${it.content.slice(0, 180)}…` : it.content,
+                        searchQ
+                      )}
                     </div>
                   </button>
                 ))}

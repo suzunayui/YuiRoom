@@ -180,6 +180,18 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_dm_messages_thread_created_at
       ON dm_messages(thread_id, created_at);
 
+    CREATE TABLE IF NOT EXISTS dm_message_reactions (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL REFERENCES dm_messages(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      emoji TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(message_id, user_id, emoji)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dm_message_reactions_message_id
+      ON dm_message_reactions(message_id);
+
     -- room bans
     CREATE TABLE IF NOT EXISTS room_bans (
       id TEXT PRIMARY KEY,

@@ -1207,6 +1207,23 @@ app.get("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit).reverse(); // oldest -> newest
 
+  const messageIds = page.map((r) => String(r.id));
+  const reactionsByMessage: Record<string, Record<string, { emoji: string; count: number; byMe: boolean }>> = {};
+  if (messageIds.length > 0) {
+    const rr = await pool.query(
+      `SELECT message_id, emoji, user_id
+       FROM dm_message_reactions
+       WHERE message_id = ANY($1::text[])`,
+      [messageIds]
+    );
+    for (const row of rr.rows) {
+      const byEmoji = (reactionsByMessage[String(row.message_id)] ||= {});
+      const item = (byEmoji[String(row.emoji)] ||= { emoji: String(row.emoji), count: 0, byMe: false });
+      item.count += 1;
+      if (String(row.user_id) === me) item.byMe = true;
+    }
+  }
+
   res.json({
     items: page.map((r) => ({
       id: r.id,
@@ -1216,6 +1233,7 @@ app.get("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
       author_has_avatar: !!r.author_has_avatar,
       content: r.content,
       created_at: r.created_at,
+      reactions: Object.values(reactionsByMessage[String(r.id)] ?? {}),
     })),
     hasMore,
   });
@@ -1265,12 +1283,144 @@ app.post(
     author_has_avatar: authorHasAvatar,
     content,
     created_at: new Date().toISOString(),
+    reactions: [],
   };
 
   // realtime: broadcast to subscribers of this DM thread
   wsBroadcastDm(threadId, { type: "dm_message_created", threadId, message: payload });
 
   res.status(201).json(payload);
+  }
+);
+
+// toggle dm reaction
+app.post(
+  "/dm/messages/:messageId/reactions/toggle",
+  requireAuth,
+  rateLimit({ name: "dm_reaction_toggle", windowMs: 10_000, max: 50, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const messageId = String(req.params.messageId || "");
+    if (!messageId) return res.status(400).json({ error: "messageId_required" });
+
+    const emoji = String(req.body?.emoji ?? "").trim();
+    if (!emoji) return res.status(400).json({ error: "emoji_required" });
+    if (emoji.length > 16) return res.status(400).json({ error: "emoji_too_long" });
+
+    const msg = await pool.query(`SELECT id, thread_id FROM dm_messages WHERE id=$1`, [messageId]);
+    if ((msg.rowCount ?? 0) === 0) return res.status(404).json({ error: "message_not_found" });
+    const threadId = String(msg.rows?.[0]?.thread_id || "");
+
+    const member = await pool.query(`SELECT 1 FROM dm_members WHERE thread_id=$1 AND user_id=$2`, [threadId, me]);
+    if ((member.rowCount ?? 0) === 0) return res.status(403).json({ error: "forbidden" });
+
+    const otherQ = await pool.query(
+      `SELECT user_id FROM dm_members WHERE thread_id=$1 AND user_id <> $2 LIMIT 1`,
+      [threadId, me]
+    );
+    const other = String(otherQ.rows?.[0]?.user_id || "");
+    if (!other) return res.status(403).json({ error: "forbidden" });
+    if (!(await areFriends(me, other))) return res.status(403).json({ error: "not_friends" });
+
+    const existing = await pool.query(
+      `SELECT id FROM dm_message_reactions WHERE message_id=$1 AND user_id=$2 AND emoji=$3`,
+      [messageId, me, emoji]
+    );
+    if ((existing.rowCount ?? 0) > 0) {
+      await pool.query(
+        `DELETE FROM dm_message_reactions WHERE message_id=$1 AND user_id=$2 AND emoji=$3`,
+        [messageId, me, emoji]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO dm_message_reactions (id, message_id, user_id, emoji) VALUES ($1, $2, $3, $4)`,
+        [randomUUID(), messageId, me, emoji]
+      );
+    }
+
+    const r = await pool.query(
+      `SELECT emoji, user_id FROM dm_message_reactions WHERE message_id=$1`,
+      [messageId]
+    );
+    const byEmoji: Record<string, { emoji: string; count: number; byMe: boolean }> = {};
+    for (const row of r.rows) {
+      const key = String(row.emoji);
+      const item = (byEmoji[key] ||= { emoji: key, count: 0, byMe: false });
+      item.count += 1;
+      if (String(row.user_id) === me) item.byMe = true;
+    }
+
+    const reactions = Object.values(byEmoji);
+    wsBroadcastDm(threadId, { type: "dm_reactions_updated", threadId, messageId, reactions });
+    res.json({ messageId, reactions });
+  }
+);
+
+// search dm messages (member + friends only)
+app.get(
+  "/dm/threads/:threadId/messages/search",
+  requireAuth,
+  rateLimit({ name: "dm_message_search", windowMs: 10_000, max: 30, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const threadId = String(req.params.threadId || "");
+    if (!threadId) return res.status(400).json({ error: "threadId_required" });
+
+    const member = await pool.query(`SELECT 1 FROM dm_members WHERE thread_id=$1 AND user_id=$2`, [threadId, me]);
+    if ((member.rowCount ?? 0) === 0) return res.status(403).json({ error: "forbidden" });
+
+    const otherQ = await pool.query(
+      `SELECT user_id FROM dm_members WHERE thread_id=$1 AND user_id <> $2 LIMIT 1`,
+      [threadId, me]
+    );
+    const other = String(otherQ.rows?.[0]?.user_id || "");
+    if (!other) return res.status(403).json({ error: "forbidden" });
+    if (!(await areFriends(me, other))) return res.status(403).json({ error: "not_friends" });
+
+    const qRaw = typeof req.query.q === "string" ? req.query.q : "";
+    const q = qRaw.trim();
+    if (!q) return res.status(400).json({ error: "q_required" });
+    if (q.length > 100) return res.status(400).json({ error: "q_too_long" });
+
+    const limitRaw = req.query.limit;
+    const limit = Math.min(50, Math.max(1, Number(limitRaw ?? 20) || 20));
+
+    const beforeRaw = typeof req.query.before === "string" ? req.query.before : "";
+    let before: Date | null = null;
+    if (beforeRaw) {
+      const d = new Date(beforeRaw);
+      if (!Number.isNaN(d.getTime())) before = d;
+    }
+
+    const { rows } = await pool.query(
+      `SELECT m.id, m.thread_id, m.author_id, u.display_name AS author_name,
+              (u.avatar_data IS NOT NULL) AS author_has_avatar,
+              m.content, m.created_at
+       FROM dm_messages m
+       JOIN users u ON u.id = m.author_id
+       WHERE m.thread_id=$1
+         AND m.content ILIKE $2
+         AND ($3::timestamptz IS NULL OR m.created_at < $3)
+       ORDER BY m.created_at DESC
+       LIMIT $4`,
+      [threadId, `%${q}%`, before, limit + 1]
+    );
+
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+
+    res.json({
+      items: page.map((r) => ({
+        id: r.id,
+        thread_id: r.thread_id,
+        author_id: r.author_id,
+        author: r.author_name,
+        author_has_avatar: !!r.author_has_avatar,
+        content: r.content,
+        created_at: r.created_at,
+      })),
+      hasMore,
+    });
   }
 );
 
@@ -2027,6 +2177,9 @@ app.get(
     const limitRaw = req.query.limit;
     const limit = Math.min(50, Math.max(1, Number(limitRaw ?? 20) || 20));
 
+    const channelId = typeof req.query.channelId === "string" ? req.query.channelId.trim() : "";
+    const channelFilter = channelId ? channelId : null;
+
     const beforeRaw = typeof req.query.before === "string" ? req.query.before : "";
     let before: Date | null = null;
     if (beforeRaw) {
@@ -2045,9 +2198,10 @@ app.get(
        WHERE c.room_id=$1
          AND m.content ILIKE $2
          AND ($3::timestamptz IS NULL OR m.created_at < $3)
+         AND ($4::text IS NULL OR m.channel_id = $4)
        ORDER BY m.created_at DESC
-       LIMIT $4`,
-      [roomId, `%${q}%`, before, limit + 1]
+       LIMIT $5`,
+      [roomId, `%${q}%`, before, channelFilter, limit + 1]
     );
 
     const hasMore = rows.length > limit;

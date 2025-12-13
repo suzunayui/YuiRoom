@@ -7,9 +7,9 @@ import { ChannelList } from "./ChannelList";
 import { MessageArea } from "./MessageArea";
 import { Modal } from "./Modal";
 import { MemberPane } from "./MemberPane";
-import { renderTextWithLinks } from "./linkify";
+import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "./linkify";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
-import type { DmMessage, FriendRequests, FriendUser } from "./api";
+import type { DmMessage, DmSearchMessage, FriendRequests, FriendUser } from "./api";
 import type { RoomMember } from "./api";
 import type { AuditLog } from "./api";
 import { realtime } from "./realtime";
@@ -212,6 +212,16 @@ export default function App() {
   const [dmError, setDmError] = useState<string | null>(null);
   const [dmText, setDmText] = useState("");
   const [dmSending, setDmSending] = useState(false);
+  const [dmReactionPickerFor, setDmReactionPickerFor] = useState<string | null>(null);
+
+  const [dmSearchOpen, setDmSearchOpen] = useState(false);
+  const [dmSearchQ, setDmSearchQ] = useState("");
+  const [dmSearchBusy, setDmSearchBusy] = useState(false);
+  const [dmSearchError, setDmSearchError] = useState<string | null>(null);
+  const [dmSearchItems, setDmSearchItems] = useState<DmSearchMessage[]>([]);
+  const [dmSearchHasMore, setDmSearchHasMore] = useState(false);
+  const dmSearchBeforeRef = useRef<string | null>(null);
+  const dmSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   const openDmSeqRef = useRef(0);
   const dmListRef = useRef<HTMLDivElement | null>(null);
@@ -405,6 +415,86 @@ export default function App() {
   useEffect(() => {
     selectedDmThreadIdRef.current = selectedDmThreadId;
   }, [selectedDmThreadId]);
+
+  const dmReactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
+
+  function openDmSearch() {
+    if (!selectedDmThreadId) return;
+    setDmSearchOpen(true);
+    setDmSearchError(null);
+    setDmSearchItems([]);
+    setDmSearchHasMore(false);
+    dmSearchBeforeRef.current = null;
+    setTimeout(() => dmSearchInputRef.current?.focus(), 0);
+  }
+
+  function closeDmSearch() {
+    setDmSearchOpen(false);
+    setDmSearchQ("");
+    setDmSearchError(null);
+    setDmSearchItems([]);
+    setDmSearchHasMore(false);
+    dmSearchBeforeRef.current = null;
+  }
+
+  async function runDmSearch({ append }: { append: boolean }) {
+    if (!selectedDmThreadId) return;
+    const q = dmSearchQ.trim();
+    if (!q) return;
+
+    const before = append ? dmSearchBeforeRef.current : null;
+
+    setDmSearchBusy(true);
+    setDmSearchError(null);
+    try {
+      const r = await api.searchDmMessages(selectedDmThreadId, q, { limit: 20, before });
+      if (append) {
+        setDmSearchItems((prev) => {
+          const existing = new Set(prev.map((m) => m.id));
+          const add = r.items.filter((m) => !existing.has(m.id));
+          return [...prev, ...add];
+        });
+      } else {
+        setDmSearchItems(r.items);
+      }
+      setDmSearchHasMore(!!r.hasMore);
+      const last = r.items[r.items.length - 1];
+      if (last?.created_at) dmSearchBeforeRef.current = last.created_at;
+    } catch (e: any) {
+      setDmSearchError(e?.message ?? "failed");
+    } finally {
+      setDmSearchBusy(false);
+    }
+  }
+
+  async function toggleDmReaction(messageId: string, emoji: string) {
+    try {
+      const res = await api.toggleDmReaction(messageId, emoji);
+      setDmMessages((prev) => prev.map((m) => (m.id === res.messageId ? { ...m, reactions: res.reactions } : m)));
+    } catch (e: any) {
+      setToast(e?.message ?? "failed");
+    }
+  }
+
+  async function pickDmReaction(messageId: string, emoji: string) {
+    setDmReactionPickerFor(null);
+    await toggleDmReaction(messageId, emoji);
+  }
+
+  useEffect(() => {
+    if (!authed) return;
+    function onKeyDown(e: KeyboardEvent) {
+      const isK = String((e as any).key ?? "").toLowerCase() === "k";
+      if (!isK) return;
+      if (!(e.ctrlKey || (e as any).metaKey)) return;
+      if (selectedRoomIdRef.current !== HOME_ID) return;
+      if (!selectedDmThreadIdRef.current) return;
+      e.preventDefault();
+      openDmSearch();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [authed, selectedDmThreadId]);
 
   useEffect(() => {
     if (!authed || !currentUserId) return;
@@ -822,6 +912,24 @@ export default function App() {
       setDmMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
     });
     return unsub;
+  }, [selectedDmThreadId]);
+
+  useEffect(() => {
+    if (!selectedDmThreadId) return;
+    const threadId = selectedDmThreadId;
+    const unsub = realtime.subscribeDmReactions(threadId, ({ messageId, reactions }) => {
+      setDmMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, reactions } : m)));
+    });
+    return unsub;
+  }, [selectedDmThreadId]);
+
+  useEffect(() => {
+    setDmReactionPickerFor(null);
+    setDmSearchOpen(false);
+    setDmSearchItems([]);
+    setDmSearchError(null);
+    setDmSearchHasMore(false);
+    dmSearchBeforeRef.current = null;
   }, [selectedDmThreadId]);
 
   useEffect(() => {
@@ -2086,6 +2194,28 @@ export default function App() {
                 {selectedDmPeerName ? `@ ${selectedDmPeerName}` : "フレンド未選択"}
               </div>
 
+              {selectedDmThreadId && (
+                <div style={{ padding: "10px 16px 0", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <div style={{ marginRight: "auto", color: "#8e9297", fontSize: 12, alignSelf: "center" }}>Ctrl+K</div>
+                  <button
+                    onClick={openDmSearch}
+                    style={{
+                      border: "1px solid #40444b",
+                      background: "transparent",
+                      color: "#dcddde",
+                      borderRadius: 10,
+                      padding: "8px 10px",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: 900,
+                    }}
+                    title="讀懃ｴ｢ (Ctrl+K)"
+                  >
+                    讀懃ｴ｢
+                  </button>
+                </div>
+              )}
+
               <div ref={dmListRef} className="darkScroll" style={{ flex: 1, padding: "16px", overflowY: "auto" }}>
                 {dmLoading && <div style={{ opacity: 0.8, fontSize: 13 }}>読み込み中…</div>}
                 {dmError && <div style={{ color: "#ff7a7a", fontSize: 12, marginBottom: 10 }}>{dmError}</div>}
@@ -2154,6 +2284,89 @@ export default function App() {
                       <div style={{ fontSize: 14, lineHeight: 1.4, wordWrap: "break-word" as any }}>
                         {renderTextWithLinks(msg.content)}
                       </div>
+
+                      {msg.reactions && msg.reactions.length > 0 && (
+                        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          {msg.reactions.map((r) => (
+                            <button
+                              key={r.emoji}
+                              onClick={() => void toggleDmReaction(msg.id, r.emoji)}
+                              style={{
+                                border: "1px solid #40444b",
+                                background: r.byMe ? "#40444b" : "transparent",
+                                color: "#dcddde",
+                                borderRadius: 999,
+                                padding: "4px 8px",
+                                fontSize: 12,
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                              }}
+                              title="繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ"
+                            >
+                              <span>{r.emoji}</span>
+                              <span style={{ opacity: 0.9 }}>{r.count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center" }}>
+                        <button
+                          onClick={() => setDmReactionPickerFor((prev) => (prev === msg.id ? null : msg.id))}
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "#8e9297",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            padding: 0,
+                          }}
+                          title="繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ繧定ｿｽ蜉"
+                        >
+                          繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ
+                        </button>
+                      </div>
+
+                      {dmReactionPickerFor === msg.id && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 8,
+                            padding: "10px 10px",
+                            borderRadius: 10,
+                            border: "1px solid #40444b",
+                            background: "#2f3136",
+                            maxWidth: 360,
+                          }}
+                        >
+                          {dmReactionEmojis.map((emoji) => (
+                            <button
+                              key={emoji}
+                              onClick={() => void pickDmReaction(msg.id, emoji)}
+                              style={{
+                                width: 36,
+                                height: 32,
+                                borderRadius: 8,
+                                border: "1px solid #40444b",
+                                background: "transparent",
+                                color: "#dcddde",
+                                cursor: "pointer",
+                                fontSize: 16,
+                                display: "grid",
+                                placeItems: "center",
+                              }}
+                              title={emoji}
+                              aria-label={`繝ｪ繧｢繧ｯ繧ｷ繝ｧ繝ｳ ${emoji}`}
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -2199,6 +2412,145 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {dmSearchOpen && (
+                <Modal
+                  title="DM讀懃ｴ｢"
+                  onClose={closeDmSearch}
+                  maxWidth="min(720px, 95vw)"
+                  footer={
+                    <>
+                      <button
+                        onClick={closeDmSearch}
+                        disabled={dmSearchBusy}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "1px solid #40444b",
+                          background: "transparent",
+                          color: "#dcddde",
+                          cursor: "pointer",
+                          fontSize: 13,
+                        }}
+                      >
+                        髢峨§繧・
+                      </button>
+                      <button
+                        onClick={() => void runDmSearch({ append: false })}
+                        disabled={dmSearchBusy || !dmSearchQ.trim()}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 8,
+                          border: "none",
+                          background: "#7289da",
+                          color: "#ffffff",
+                          cursor: "pointer",
+                          fontSize: 13,
+                          fontWeight: 900,
+                          opacity: dmSearchBusy || !dmSearchQ.trim() ? 0.7 : 1,
+                        }}
+                      >
+                        讀懃ｴ｢
+                      </button>
+                    </>
+                  }
+                >
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <input
+                      ref={dmSearchInputRef}
+                      value={dmSearchQ}
+                      onChange={(e) => setDmSearchQ(e.target.value)}
+                      placeholder="Search (Ctrl+K)"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void runDmSearch({ append: false });
+                      }}
+                      style={{
+                        width: "100%",
+                        padding: "12px 12px",
+                        borderRadius: 10,
+                        border: "1px solid #40444b",
+                        background: "#202225",
+                        color: "#dcddde",
+                        fontSize: 14,
+                        outline: "none",
+                      }}
+                    />
+
+                    {dmSearchError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{dmSearchError}</div>}
+
+                    {dmSearchItems.length === 0 ? (
+                      <div style={{ color: "#8e9297", fontSize: 12 }}>見つからない</div>
+                    ) : (
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {dmSearchItems.map((it) => (
+                          <button
+                            key={it.id}
+                            type="button"
+                            onClick={() => {
+                              if (!selectedDmThreadId) return;
+                              setFocusDmMessage((prev) => ({
+                                threadId: selectedDmThreadId,
+                                messageId: it.id,
+                                nonce: (prev?.nonce ?? 0) + 1,
+                              }));
+                              setDmSearchOpen(false);
+                            }}
+                            style={{
+                              textAlign: "left",
+                              border: "1px solid #40444b",
+                              background: "#202225",
+                              color: "#dcddde",
+                              borderRadius: 12,
+                              padding: "10px 12px",
+                              cursor: "pointer",
+                              display: "grid",
+                              gap: 6,
+                            }}
+                            title={it.author}
+                          >
+                            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {it.author}
+                              </div>
+                              <div style={{ color: "#8e9297", fontSize: 12, flexShrink: 0 }}>
+                                {new Date(it.created_at).toLocaleString()}
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
+                              {renderTextWithLinksAndHighlights(
+                                it.content.length > 180 ? `${it.content.slice(0, 180)}窶ｦ` : it.content,
+                                dmSearchQ
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {dmSearchHasMore && (
+                      <button
+                        type="button"
+                        onClick={() => void runDmSearch({ append: true })}
+                        disabled={dmSearchBusy}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          border: "1px solid #40444b",
+                          background: "transparent",
+                          color: "#dcddde",
+                          cursor: "pointer",
+                          fontWeight: 900,
+                          fontSize: 12,
+                          opacity: dmSearchBusy ? 0.7 : 1,
+                        }}
+                      >
+                        {dmSearchBusy ? "隱ｭ縺ｿ霎ｼ縺ｿ荳ｭ窶ｦ" : "縺輔ｉ縺ｫ隱ｭ縺ｿ霎ｼ繧"}
+                      </button>
+                    )}
+                  </div>
+                </Modal>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", flex: 1, height: "100vh" }}>

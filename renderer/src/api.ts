@@ -212,6 +212,17 @@ export type DmMessage = {
   author_has_avatar?: boolean;
   content: string;
   created_at: string;
+  reactions?: Array<{ emoji: string; count: number; byMe: boolean }>;
+};
+
+export type DmSearchMessage = {
+  id: string;
+  thread_id: string;
+  author_id: string;
+  author: string;
+  author_has_avatar?: boolean;
+  content: string;
+  created_at: string;
 };
 
 export type Page<T> = {
@@ -244,11 +255,16 @@ export const api = {
   getRoomTree: (roomId: string) => getJson<RoomTree>(`/rooms/${encodeURIComponent(roomId)}/tree`),
   createRoom: (name: string) => postJson<Room>("/rooms", { name }),
   deleteRoom: (roomId: string) => deleteJson<{ ok: boolean }>(`/rooms/${encodeURIComponent(roomId)}`),
-  searchRoomMessages: (roomId: string, q: string, opts?: { limit?: number; before?: string | null }) => {
+  searchRoomMessages: (
+    roomId: string,
+    q: string,
+    opts?: { limit?: number; before?: string | null; channelId?: string | null }
+  ) => {
     const qs = new URLSearchParams();
     qs.set("q", q);
     qs.set("limit", String(opts?.limit ?? 20));
     if (opts?.before) qs.set("before", opts.before);
+    if (opts?.channelId) qs.set("channelId", opts.channelId);
     return getJson<Page<RoomSearchMessage>>(`/rooms/${encodeURIComponent(roomId)}/messages/search?${qs.toString()}`);
   },
   createCategory: (roomId: string, name: string, position?: number) =>
@@ -398,6 +414,18 @@ export const api = {
     q.set("before", beforeIso);
     return getJson<Page<DmMessage>>(`/dm/threads/${encodeURIComponent(threadId)}/messages?${q.toString()}`);
   },
+  searchDmMessages: (threadId: string, qText: string, opts?: { limit?: number; before?: string | null }) => {
+    const q = new URLSearchParams();
+    q.set("q", qText);
+    q.set("limit", String(opts?.limit ?? 20));
+    if (opts?.before) q.set("before", opts.before);
+    return getJson<Page<DmSearchMessage>>(`/dm/threads/${encodeURIComponent(threadId)}/messages/search?${q.toString()}`);
+  },
+  toggleDmReaction: (messageId: string, emoji: string) =>
+    postJson<{ messageId: string; reactions: Array<{ emoji: string; count: number; byMe: boolean }> }>(
+      `/dm/messages/${encodeURIComponent(messageId)}/reactions/toggle`,
+      { emoji }
+    ),
   sendDmMessage: (threadId: string, content: string) =>
     postJson<DmMessage>(`/dm/threads/${encodeURIComponent(threadId)}/messages`, { content }),
 };

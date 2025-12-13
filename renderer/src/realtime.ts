@@ -14,6 +14,7 @@ type RealtimeEvent =
   | { type: "channel_message_created"; channelId: string; message: any }
   | { type: "message_reactions_updated"; channelId: string; messageId: string; reactions: any }
   | { type: "dm_message_created"; threadId: string; message: any }
+  | { type: "dm_reactions_updated"; threadId: string; messageId: string; reactions: any }
   | { type: "home_updated" }
   | { type: "subscribed_home" }
   | { type: "error"; error: string }
@@ -32,6 +33,7 @@ const channelReactionHandlers = new Map<SubKey, Set<Handler<{ messageId: string;
 const channelDeleteHandlers = new Map<SubKey, Set<Handler<{ messageId: string }>>>();
 const channelUpdateHandlers = new Map<SubKey, Set<Handler<{ messageId: string; content: string; edited_at: string | null }>>>();
 const dmHandlers = new Map<SubKey, Set<Handler<any>>>();
+const dmReactionHandlers = new Map<SubKey, Set<Handler<{ messageId: string; reactions: any }>>>();
 const dmErrorHandlers = new Map<SubKey, Set<Handler<string>>>();
 const homeHandlers = new Set<Handler<void>>();
 const helloHandlers = new Set<Handler<{ userId: string }>>();
@@ -94,7 +96,8 @@ function ensureConnected() {
     // re-subscribe
     const channelIds = new Set<string>([...channelHandlers.keys(), ...channelReactionHandlers.keys()]);
     for (const channelId of channelIds) wsSend({ type: "subscribe", channelId });
-    for (const threadId of dmHandlers.keys()) {
+    const threadIds = new Set<string>([...dmHandlers.keys(), ...dmReactionHandlers.keys()]);
+    for (const threadId of threadIds) {
       wsSend({ type: "subscribe_dm", threadId });
     }
   });
@@ -228,6 +231,17 @@ function ensureConnected() {
       for (const h of handlers) h((data as any).message);
       return;
     }
+
+    if (data.type === "dm_reactions_updated" && typeof (data as any).threadId === "string") {
+      const key = String((data as any).threadId);
+      const handlers = dmReactionHandlers.get(key);
+      if (!handlers) return;
+      const messageId = String((data as any).messageId ?? "");
+      const reactions = (data as any).reactions;
+      if (!messageId) return;
+      for (const h of handlers) h({ messageId, reactions });
+      return;
+    }
   });
 
   ws.addEventListener("close", () => {
@@ -356,7 +370,7 @@ export const realtime = {
     }
     set.add(onMessage);
 
-    if (first) {
+    if (first && !dmReactionHandlers.has(threadId)) {
       wsSend({ type: "subscribe_dm", threadId });
     }
 
@@ -366,7 +380,33 @@ export const realtime = {
       s.delete(onMessage);
       if (s.size === 0) {
         dmHandlers.delete(threadId);
-        wsSend({ type: "unsubscribe_dm", threadId });
+        if (!dmReactionHandlers.has(threadId)) wsSend({ type: "unsubscribe_dm", threadId });
+      }
+    };
+  },
+
+  subscribeDmReactions(threadId: string, onUpdate: Handler<{ messageId: string; reactions: any }>) {
+    ensureConnected();
+
+    let set = dmReactionHandlers.get(threadId);
+    const first = !set;
+    if (!set) {
+      set = new Set();
+      dmReactionHandlers.set(threadId, set);
+    }
+    set.add(onUpdate);
+
+    if (first && !dmHandlers.has(threadId)) {
+      wsSend({ type: "subscribe_dm", threadId });
+    }
+
+    return () => {
+      const s = dmReactionHandlers.get(threadId);
+      if (!s) return;
+      s.delete(onUpdate);
+      if (s.size === 0) {
+        dmReactionHandlers.delete(threadId);
+        if (!dmHandlers.has(threadId)) wsSend({ type: "unsubscribe_dm", threadId });
       }
     };
   },

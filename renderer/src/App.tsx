@@ -2203,6 +2203,7 @@ export default function App() {
           ) : (
             <div style={{ display: "flex", flex: 1, height: "100vh" }}>
               <MessageArea
+                roomId={tree?.room?.id ?? null}
                 selectedChannelId={selectedChannelId}
                 selectedChannelName={selectedChannelName}
                 onAuthorClick={({ userId, displayName }) => openUserActions(userId, { displayName })}
@@ -2211,6 +2212,10 @@ export default function App() {
                 mentionCandidates={memberPane.map((m) => ({ userId: m.userId, displayName: m.displayName }))}
                 focusMessageId={focusMessage?.messageId ?? null}
                 focusMessageNonce={focusMessage?.nonce ?? 0}
+                onJumpToMessage={({ channelId, messageId }) => {
+                  setFocusMessage((prev) => ({ messageId, nonce: (prev?.nonce ?? 0) + 1 }));
+                  selectChannelAndMarkRead(channelId);
+                }}
               />
               <MemberPane
                 members={memberPane}

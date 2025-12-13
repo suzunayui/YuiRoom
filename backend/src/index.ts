@@ -2006,6 +2006,69 @@ app.get("/rooms/:roomId/audit", requireAuth, async (req, res) => {
   );
 });
 
+// search room messages (owner/member only)
+app.get(
+  "/rooms/:roomId/messages/search",
+  requireAuth,
+  rateLimit({ name: "room_message_search", windowMs: 10_000, max: 30, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const roomId = String(req.params.roomId || "");
+    if (!roomId) return res.status(400).json({ error: "roomId_required" });
+
+    if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+    if (!(await assertRoomMember(roomId, me, res))) return;
+
+    const qRaw = typeof req.query.q === "string" ? req.query.q : "";
+    const q = qRaw.trim();
+    if (!q) return res.status(400).json({ error: "q_required" });
+    if (q.length > 100) return res.status(400).json({ error: "q_too_long" });
+
+    const limitRaw = req.query.limit;
+    const limit = Math.min(50, Math.max(1, Number(limitRaw ?? 20) || 20));
+
+    const beforeRaw = typeof req.query.before === "string" ? req.query.before : "";
+    let before: Date | null = null;
+    if (beforeRaw) {
+      const d = new Date(beforeRaw);
+      if (!Number.isNaN(d.getTime())) before = d;
+    }
+
+    const { rows } = await pool.query(
+      `SELECT m.id, m.channel_id, c.name AS channel_name,
+              m.author_id, COALESCE(m.author_name, m.author) AS author_name,
+              (u.avatar_data IS NOT NULL) AS author_has_avatar,
+              m.content, m.created_at
+       FROM messages m
+       JOIN channels c ON c.id = m.channel_id
+       LEFT JOIN users u ON u.id = m.author_id
+       WHERE c.room_id=$1
+         AND m.content ILIKE $2
+         AND ($3::timestamptz IS NULL OR m.created_at < $3)
+       ORDER BY m.created_at DESC
+       LIMIT $4`,
+      [roomId, `%${q}%`, before, limit + 1]
+    );
+
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+
+    res.json({
+      items: page.map((r) => ({
+        id: r.id,
+        channelId: r.channel_id,
+        channelName: r.channel_name,
+        authorId: r.author_id ?? "",
+        author: r.author_name,
+        authorHasAvatar: !!r.author_has_avatar,
+        content: r.content,
+        created_at: r.created_at,
+      })),
+      hasMore,
+    });
+  }
+);
+
 // personal audit logs (includes room + home actions where you are actor/target)
 app.get("/audit", requireAuth, async (req, res) => {
   const me = (req as any).userId as string;

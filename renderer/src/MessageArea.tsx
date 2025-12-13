@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { Message } from "./api";
+import type { Message, RoomSearchMessage } from "./api";
 import { realtime } from "./realtime";
 import { Modal } from "./Modal";
 import { renderTextWithLinks } from "./linkify";
 
 type Props = {
+  roomId?: string | null;
   selectedChannelId: string | null;
   selectedChannelName: string | null;
   onAuthorClick?: (author: { userId: string; displayName: string }) => void;
@@ -14,6 +15,7 @@ type Props = {
   mentionCandidates?: Array<{ userId: string; displayName: string }>;
   focusMessageId?: string | null;
   focusMessageNonce?: number;
+  onJumpToMessage?: (args: { channelId: string; messageId: string }) => void;
 };
 
 function formatTime(iso: string) {
@@ -122,6 +124,7 @@ function AttachmentImage({
 }
 
 export function MessageArea({
+  roomId,
   selectedChannelId,
   selectedChannelName,
   onAuthorClick,
@@ -130,6 +133,7 @@ export function MessageArea({
   mentionCandidates,
   focusMessageId,
   focusMessageNonce,
+  onJumpToMessage,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -152,6 +156,14 @@ export function MessageArea({
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQ, setSearchQ] = useState("");
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchItems, setSearchItems] = useState<RoomSearchMessage[]>([]);
+  const [searchHasMore, setSearchHasMore] = useState(false);
+  const [searchBefore, setSearchBefore] = useState<string | null>(null);
 
   const reactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
 
@@ -213,6 +225,42 @@ export function MessageArea({
       cancelled = true;
     };
   }, [selectedChannelId]);
+
+  function openSearch() {
+    if (!roomId) return;
+    setSearchOpen(true);
+    setSearchError(null);
+    setSearchItems([]);
+    setSearchHasMore(false);
+    setSearchBefore(null);
+  }
+
+  function closeSearch() {
+    if (searchBusy) return;
+    setSearchOpen(false);
+  }
+
+  async function runSearch(opts?: { append?: boolean }) {
+    if (!roomId) return;
+    const q = searchQ.trim();
+    if (!q) return;
+    if (searchBusy) return;
+
+    setSearchBusy(true);
+    setSearchError(null);
+    try {
+      const before = opts?.append ? searchBefore : null;
+      const r = await api.searchRoomMessages(roomId, q, { limit: 20, before });
+      setSearchItems((prev) => (opts?.append ? [...prev, ...r.items] : r.items));
+      setSearchHasMore(!!r.hasMore);
+      const last = r.items[r.items.length - 1];
+      setSearchBefore(last ? last.created_at : before);
+    } catch (e: any) {
+      setSearchError(e?.message ?? "failed");
+    } finally {
+      setSearchBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!selectedChannelId) return;
@@ -656,9 +704,36 @@ export function MessageArea({
         padding: "16px",
         borderBottom: "1px solid #202225",
         fontSize: 16,
-        fontWeight: "bold"
+        fontWeight: "bold",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
       }}>
-        {selectedChannelName ? `# ${selectedChannelName}` : "チャンネル未選択"}
+        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {selectedChannelName ? `# ${selectedChannelName}` : "チャンネル未選択"}
+        </div>
+        {roomId && (
+          <button
+            type="button"
+            onClick={openSearch}
+            style={{
+              border: "1px solid #40444b",
+              background: "transparent",
+              color: "#b9bbbe",
+              cursor: "pointer",
+              padding: "6px 10px",
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 900,
+              flexShrink: 0,
+            }}
+            title="検索"
+            aria-label="検索"
+          >
+            検索
+          </button>
+        )}
       </div>
 
       {/* メッセージリスト */}
@@ -1390,6 +1465,136 @@ export function MessageArea({
                 border: "1px solid #202225",
               }}
             />
+          </div>
+        </Modal>
+      )}
+
+      {searchOpen && (
+        <Modal
+          title="検索"
+          onClose={closeSearch}
+          maxWidth="min(720px, 95vw)"
+          footer={
+            <>
+              <button
+                onClick={closeSearch}
+                disabled={searchBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #40444b",
+                  background: "transparent",
+                  color: "#dcddde",
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                閉じる
+              </button>
+              <button
+                onClick={() => void runSearch({ append: false })}
+                disabled={searchBusy || !searchQ.trim()}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#7289da",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  opacity: searchBusy || !searchQ.trim() ? 0.7 : 1,
+                }}
+              >
+                検索
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <input
+              value={searchQ}
+              onChange={(e) => setSearchQ(e.target.value)}
+              placeholder="キーワード（URLもOK）"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void runSearch({ append: false });
+              }}
+              style={{
+                width: "100%",
+                padding: "12px 12px",
+                borderRadius: 10,
+                border: "1px solid #40444b",
+                background: "#202225",
+                color: "#dcddde",
+                fontSize: 14,
+                outline: "none",
+              }}
+            />
+
+            {searchError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{searchError}</div>}
+
+            {searchItems.length === 0 ? (
+              <div style={{ color: "#8e9297", fontSize: 12 }}>結果なし</div>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {searchItems.map((it) => (
+                  <button
+                    key={it.id}
+                    type="button"
+                    onClick={() => {
+                      onJumpToMessage?.({ channelId: it.channelId, messageId: it.id });
+                      setSearchOpen(false);
+                    }}
+                    style={{
+                      textAlign: "left",
+                      border: "1px solid #40444b",
+                      background: "#202225",
+                      color: "#dcddde",
+                      borderRadius: 12,
+                      padding: "10px 12px",
+                      cursor: "pointer",
+                      display: "grid",
+                      gap: 6,
+                    }}
+                    title={`#${it.channelName}`}
+                  >
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        #{it.channelName} — {it.author}
+                      </div>
+                      <div style={{ color: "#8e9297", fontSize: 12, flexShrink: 0 }}>
+                        {new Date(it.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
+                      {renderTextWithLinks(it.content.length > 180 ? `${it.content.slice(0, 180)}…` : it.content)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {searchHasMore && (
+              <button
+                type="button"
+                onClick={() => void runSearch({ append: true })}
+                disabled={searchBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #40444b",
+                  background: "transparent",
+                  color: "#dcddde",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                  fontSize: 12,
+                  opacity: searchBusy ? 0.7 : 1,
+                }}
+              >
+                {searchBusy ? "読み込み中…" : "さらに読み込む"}
+              </button>
+            )}
           </div>
         </Modal>
       )}

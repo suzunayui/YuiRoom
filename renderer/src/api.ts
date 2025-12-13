@@ -219,6 +219,17 @@ export type Page<T> = {
   hasMore: boolean;
 };
 
+export type RoomSearchMessage = {
+  id: string;
+  channelId: string;
+  channelName: string;
+  authorId: string;
+  author: string;
+  authorHasAvatar: boolean;
+  content: string;
+  created_at: string;
+};
+
 export const api = {
   base: apiBase,
   getAuthToken: () => authToken,
@@ -233,6 +244,13 @@ export const api = {
   getRoomTree: (roomId: string) => getJson<RoomTree>(`/rooms/${encodeURIComponent(roomId)}/tree`),
   createRoom: (name: string) => postJson<Room>("/rooms", { name }),
   deleteRoom: (roomId: string) => deleteJson<{ ok: boolean }>(`/rooms/${encodeURIComponent(roomId)}`),
+  searchRoomMessages: (roomId: string, q: string, opts?: { limit?: number; before?: string | null }) => {
+    const qs = new URLSearchParams();
+    qs.set("q", q);
+    qs.set("limit", String(opts?.limit ?? 20));
+    if (opts?.before) qs.set("before", opts.before);
+    return getJson<Page<RoomSearchMessage>>(`/rooms/${encodeURIComponent(roomId)}/messages/search?${qs.toString()}`);
+  },
   createCategory: (roomId: string, name: string, position?: number) =>
     postJson<{ id: string; room_id: string; name: string; position: number }>(
       `/rooms/${encodeURIComponent(roomId)}/categories`,

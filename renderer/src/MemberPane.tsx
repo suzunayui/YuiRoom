@@ -38,6 +38,7 @@ export function MemberPane({ members, loading, error, onMemberClick }: Props) {
       </div>
 
       <div
+        className="darkScroll"
         style={{
           flex: 1,
           overflowY: "auto",

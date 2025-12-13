@@ -33,7 +33,8 @@ services:
       POSTGRES_DB: yuiroom
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18+ expects a single mount at /var/lib/postgresql (it will create a versioned subdir).
+      - pgdata:/var/lib/postgresql
       - ./secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U yuiroom"]

@@ -19,6 +19,9 @@
 生成物:
 - 初回起動時に `./secrets/` に `postgres_password` / `auth_secret` / `database_url` を自動生成します（git管理外）
 
+注意:
+- Postgres 18+ はボリュームを `/var/lib/postgresql` にマウントする前提です（このリポジトリの`docker-compose.yml`は対応済み）。
+
 確認:
 - `docker compose ps`
 - `docker compose logs -f caddy`

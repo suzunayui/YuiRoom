@@ -34,7 +34,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18+ expects a single mount at /var/lib/postgresql (it will create a versioned subdir).
+      - pgdata:/var/lib/postgresql
       - ./secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U yuiroom"]

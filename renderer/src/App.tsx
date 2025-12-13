@@ -2433,7 +2433,7 @@ export default function App() {
                           fontSize: 13,
                         }}
                       >
-                        髢峨§繧・
+                        閉じる
                       </button>
                       <button
                         onClick={() => void runDmSearch({ append: false })}

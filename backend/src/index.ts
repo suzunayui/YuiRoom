@@ -443,7 +443,9 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "5mb" }));
+// Attachments are currently sent as base64 data URLs inside JSON.
+// 10MB binary ~= 13.3MB base64, plus JSON overhead.
+app.use(express.json({ limit: "25mb" }));
 
 const RP_ID = process.env.RP_ID ?? "localhost";
 const RP_ORIGIN = process.env.RP_ORIGIN ?? "http://localhost:5173";
@@ -773,12 +775,11 @@ async function isFirstRegisteredUser(userId: string) {
   return String(r.rows?.[0]?.id || "") === userId;
 }
 
-function parseDataUrlImage(dataUrl: string): { mime: string; bytes: Buffer } | null {
-  // data:image/png;base64,....
+function parseDataUrlAttachment(dataUrl: string): { mime: string; bytes: Buffer } | null {
+  // data:<mime>;base64,....
   const m = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
   if (!m || !m[1] || !m[2]) return null;
   const declaredMime = String(m[1]).toLowerCase();
-  if (!declaredMime.startsWith("image/")) return null;
   const b64 = String(m[2]);
   const bytes = Buffer.from(b64, "base64");
   if (!bytes || bytes.length < 12) return null;
@@ -835,17 +836,33 @@ function parseDataUrlImage(dataUrl: string): { mime: string; bytes: Buffer } | n
     return null;
   }
 
-  const detected = detectRasterImageMime(bytes);
-  if (!detected) return null;
+  function detectMp4(buf: Buffer): boolean {
+    // ISO BMFF: size (4 bytes) + "ftyp" (4 bytes) + brand...
+    return buf.length >= 12 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70;
+  }
 
-  // Accept common declared aliases but enforce signature match.
-  const normalizedDeclared =
-    declaredMime === "image/jpg" ? "image/jpeg" : declaredMime === "image/pjpeg" ? "image/jpeg" : declaredMime;
-  const allowedDeclared = new Set(["image/png", "image/jpeg", "image/jpg", "image/pjpeg", "image/webp", "image/gif"]);
-  if (!allowedDeclared.has(declaredMime)) return null;
-  if (normalizedDeclared !== detected) return null;
+  const imageDetected = detectRasterImageMime(bytes);
+  if (imageDetected) {
+    const normalizedDeclared =
+      declaredMime === "image/jpg" ? "image/jpeg" : declaredMime === "image/pjpeg" ? "image/jpeg" : declaredMime;
+    const allowedDeclared = new Set(["image/png", "image/jpeg", "image/jpg", "image/pjpeg", "image/webp", "image/gif"]);
+    if (!allowedDeclared.has(declaredMime)) return null;
+    if (normalizedDeclared !== imageDetected) return null;
+    return { mime: imageDetected, bytes };
+  }
 
-  return { mime: detected, bytes };
+  if (declaredMime === "video/mp4" && detectMp4(bytes)) {
+    return { mime: "video/mp4", bytes };
+  }
+
+  return null;
+}
+
+function parseDataUrlImage(dataUrl: string): { mime: string; bytes: Buffer } | null {
+  const parsed = parseDataUrlAttachment(dataUrl);
+  if (!parsed) return null;
+  if (!parsed.mime.startsWith("image/")) return null;
+  return parsed;
 }
 
 // health
@@ -2493,9 +2510,9 @@ app.post(
       if (typeof a !== "object" || a == null) return res.status(400).json({ error: "attachment_invalid" });
       const dataUrl = (a as any).dataUrl;
       if (typeof dataUrl !== "string") return res.status(400).json({ error: "attachment_dataUrl_required" });
-      const parsed = parseDataUrlImage(dataUrl);
+      const parsed = parseDataUrlAttachment(dataUrl);
       if (!parsed) return res.status(400).json({ error: "attachment_invalid_dataUrl" });
-      if (parsed.bytes.length > 2 * 1024 * 1024) return res.status(400).json({ error: "attachment_too_large" });
+      if (parsed.bytes.length > 10 * 1024 * 1024) return res.status(400).json({ error: "attachment_too_large" });
       attachments.push({ mime_type: parsed.mime, data: parsed.bytes });
     }
   }
@@ -2602,10 +2619,50 @@ app.get(
   const roomId = String(a.rows?.[0]?.room_id || "");
   if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
   if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+  const mime = String(a.rows[0].mime_type || "application/octet-stream");
+  const data = a.rows[0].data as Buffer;
+
   res.setHeader("cache-control", "private, no-store");
   res.setHeader("content-disposition", "inline");
-  res.setHeader("content-type", a.rows[0].mime_type);
-  res.send(a.rows[0].data);
+  res.setHeader("content-type", mime);
+  res.setHeader("accept-ranges", "bytes");
+
+  const range = String(req.headers.range ?? "");
+  const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+  if (m && data && data.length > 0) {
+    const total = data.length;
+    const startRaw = m[1] ? Number(m[1]) : NaN;
+    const endRaw = m[2] ? Number(m[2]) : NaN;
+
+    let start = 0;
+    let end = total - 1;
+
+    if (!Number.isNaN(startRaw)) start = startRaw;
+    if (!Number.isNaN(endRaw)) end = endRaw;
+
+    // suffix range: bytes=-N
+    if (Number.isNaN(startRaw) && !Number.isNaN(endRaw)) {
+      const n = Math.max(0, endRaw);
+      start = Math.max(0, total - n);
+      end = total - 1;
+    }
+
+    if (start < 0) start = 0;
+    if (end >= total) end = total - 1;
+    if (start > end || start >= total) {
+      res.status(416);
+      res.setHeader("content-range", `bytes */${total}`);
+      return res.end();
+    }
+
+    const chunk = data.subarray(start, end + 1);
+    res.status(206);
+    res.setHeader("content-range", `bytes ${start}-${end}/${total}`);
+    res.setHeader("content-length", String(chunk.length));
+    return res.send(chunk);
+  }
+
+  res.send(data);
   }
 );
 

@@ -123,6 +123,86 @@ function AttachmentImage({
   );
 }
 
+function AttachmentVideo({ attachmentId }: { attachmentId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+
+    setUrl(null);
+    setFailed(false);
+
+    void (async () => {
+      try {
+        const blob = await api.fetchAttachmentBlob(attachmentId);
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      } catch {
+        if (!active) return;
+        setFailed(true);
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachmentId]);
+
+  if (failed) {
+    return (
+      <div
+        style={{
+          maxWidth: 420,
+          width: "100%",
+          borderRadius: 8,
+          border: "1px solid #3a3f47",
+          background: "#2b2d31",
+          color: "#8e9297",
+          padding: 12,
+          fontSize: 12,
+        }}
+      >
+        動画の読み込みに失敗しました
+      </div>
+    );
+  }
+
+  if (!url) {
+    return (
+      <div
+        style={{
+          maxWidth: 420,
+          width: "100%",
+          borderRadius: 8,
+          border: "1px solid #202225",
+          background: "#2b2d31",
+          height: 180,
+        }}
+      />
+    );
+  }
+
+  return (
+    <video
+      src={url}
+      controls
+      preload="metadata"
+      style={{
+        maxWidth: 420,
+        width: "100%",
+        borderRadius: 8,
+        border: "1px solid #202225",
+        display: "block",
+        background: "#000",
+      }}
+    />
+  );
+}
+
 export function MessageArea({
   roomId,
   selectedChannelId,
@@ -145,7 +225,7 @@ export function MessageArea({
   const [sending, setSending] = useState(false);
 
   const [replyTo, setReplyTo] = useState<null | { id: string; author: string; content: string }>(null);
-  const [pendingImage, setPendingImage] = useState<null | { dataUrl: string; mime: string }>(null);
+  const [pendingAttachment, setPendingAttachment] = useState<null | { dataUrl: string; mime: string }>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const [deleteModalFor, setDeleteModalFor] = useState<null | { id: string; author: string; content: string }>(null);
   const [deleting, setDeleting] = useState(false);
@@ -202,7 +282,7 @@ export function MessageArea({
           setMessages(r.items);
           setHasMore(!!r.hasMore);
           setReplyTo(null);
-          setPendingImage(null);
+          setPendingAttachment(null);
           setReactionPickerFor(null);
           setDeleteModalFor(null);
           setEditFor(null);
@@ -449,7 +529,7 @@ export function MessageArea({
   async function send() {
     if (!selectedChannelId) return;
     const content = text.trim();
-    if (!content && !pendingImage) return;
+    if (!content && !pendingAttachment) return;
 
     setSending(true);
     setError(null);
@@ -458,13 +538,13 @@ export function MessageArea({
       const atBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 40;
       const msg = await api.createMessage(selectedChannelId, content, {
         replyTo: replyTo?.id ?? null,
-        attachmentDataUrl: pendingImage?.dataUrl ?? null,
+        attachmentDataUrl: pendingAttachment?.dataUrl ?? null,
       });
       setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
       if (atBottom) shouldStickToBottomRef.current = true;
       setText("");
       setReplyTo(null);
-      setPendingImage(null);
+      setPendingAttachment(null);
       setMentionOpen(false);
       setMentionQuery("");
       setMentionIndex(0);
@@ -592,17 +672,22 @@ export function MessageArea({
         r.onerror = () => reject(new Error("read_failed"));
         r.readAsDataURL(file);
       });
-      setPendingImage({ dataUrl, mime: file.type });
+      setPendingAttachment({ dataUrl, mime: file.type });
     } catch (err: any) {
       setError(err?.message ?? "image_failed");
     }
   }
 
-  async function handlePickImage(file: File) {
-    if (!file.type.startsWith("image/")) return;
-    // dataURLでJSON送信する都合上、サイズは控えめに
-    if (file.size > 2 * 1024 * 1024) {
-      setError("画像が大きすぎます（2MB以下にしてください）");
+  async function handlePickAttachment(file: File) {
+    const isImage = file.type.startsWith("image/");
+    const isMp4 = file.type === "video/mp4";
+    if (!isImage && !isMp4) {
+      setError("画像またはmp4のみ対応です");
+      return;
+    }
+    // dataURLでJSON送信する都合上、サイズは控えめに（サーバー側も10MBで検証）
+    if (file.size > 10 * 1024 * 1024) {
+      setError("添付ファイルが大きすぎます（10MBまで）");
       return;
     }
     try {
@@ -612,7 +697,7 @@ export function MessageArea({
         r.onerror = () => reject(new Error("read_failed"));
         r.readAsDataURL(file);
       });
-      setPendingImage({ dataUrl, mime: file.type });
+      setPendingAttachment({ dataUrl, mime: file.type });
     } catch (err: any) {
       setError(err?.message ?? "image_failed");
     }
@@ -979,7 +1064,11 @@ export function MessageArea({
                 {msg.attachments && msg.attachments.length > 0 && (
                   <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
                     {msg.attachments.map((a) => (
-                      <AttachmentImage key={a.id} attachmentId={a.id} onOpen={(src) => setImageModalSrc(src)} />
+                      a.mime_type === "video/mp4" ? (
+                        <AttachmentVideo key={a.id} attachmentId={a.id} />
+                      ) : (
+                        <AttachmentImage key={a.id} attachmentId={a.id} onOpen={(src) => setImageModalSrc(src)} />
+                      )
                     ))}
                   </div>
                 )}
@@ -1167,7 +1256,7 @@ export function MessageArea({
           </div>
         )}
 
-        {pendingImage && (
+        {pendingAttachment && (
           <div
             style={{
               marginBottom: 10,
@@ -1182,17 +1271,26 @@ export function MessageArea({
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-              <img
-                src={pendingImage.dataUrl}
-                alt="pasted"
-                style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: "1px solid #202225" }}
-              />
+              {pendingAttachment.mime.startsWith("image/") ? (
+                <img
+                  src={pendingAttachment.dataUrl}
+                  alt="pasted"
+                  style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: "1px solid #202225" }}
+                />
+              ) : (
+                <video
+                  src={pendingAttachment.dataUrl}
+                  muted
+                  preload="metadata"
+                  style={{ width: 64, height: 44, borderRadius: 6, border: "1px solid #202225", background: "#000" }}
+                />
+              )}
               <div style={{ fontSize: 12, color: "#b9bbbe", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 画像を添付（貼り付け）
               </div>
             </div>
             <button
-              onClick={() => setPendingImage(null)}
+              onClick={() => setPendingAttachment(null)}
               style={{
                 border: "none",
                 background: "transparent",
@@ -1232,13 +1330,13 @@ export function MessageArea({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,video/mp4"
             style={{ display: "none" }}
             onChange={async (e) => {
               const file = e.target.files?.[0];
               e.currentTarget.value = "";
               if (!file) return;
-              await handlePickImage(file);
+              await handlePickAttachment(file);
             }}
           />
 
@@ -1378,7 +1476,7 @@ export function MessageArea({
 
           <button
             onClick={() => send()}
-            disabled={!selectedChannelId || sending || (!text.trim() && !pendingImage)}
+            disabled={!selectedChannelId || sending || (!text.trim() && !pendingAttachment)}
             style={{
               padding: "12px 14px",
               borderRadius: 8,
@@ -1387,11 +1485,11 @@ export function MessageArea({
               color: "#ffffff",
               fontWeight: 900,
               cursor:
-                !selectedChannelId || sending || (!text.trim() && !pendingImage)
+                !selectedChannelId || sending || (!text.trim() && !pendingAttachment)
                   ? "not-allowed"
                   : "pointer",
               opacity:
-                !selectedChannelId || sending || (!text.trim() && !pendingImage) ? 0.6 : 1,
+                !selectedChannelId || sending || (!text.trim() && !pendingAttachment) ? 0.6 : 1,
               flexShrink: 0,
             }}
             title="送信"

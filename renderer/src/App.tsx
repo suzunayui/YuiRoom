@@ -836,7 +836,7 @@ export default function App() {
     try {
       const userId = normalizeUserId(login.userId);
       const options = await api.passkeyLoginOptions(userId);
-      const response = await startAuthentication(options as any);
+      const response = await startAuthentication({ optionsJSON: options } as any);
       const ok = await api.passkeyLoginVerify(userId, response as any);
 
       if (rememberUserId) writeSavedUserId(ok.userId);
@@ -888,7 +888,7 @@ export default function App() {
       const name = reg.displayName.trim();
 
       const options = await api.passkeyRegisterOptions(userId, name);
-      const response = await startRegistration(options as any);
+      const response = await startRegistration({ optionsJSON: options } as any);
       const ok = await api.passkeyRegisterVerify(userId, response as any);
 
       if (rememberUserId) writeSavedUserId(ok.userId);

@@ -65,6 +65,12 @@ services:
       RP_NAME: YuiRoom
     volumes:
       - ./secrets:/run/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health | grep -q '\"ok\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
 
   caddy:
     build:
@@ -75,7 +81,8 @@ services:
     container_name: yuiroom-caddy
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"

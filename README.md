@@ -27,6 +27,7 @@
 - `docker compose ps`
 - `docker compose logs -f caddy`
 - `docker compose logs -f backend`
+- `docker compose ps` で `backend` / `postgres` が `(healthy)` になるのを確認（healthcheck有効）
 
 ## Backup / Restore (DB + secrets)
 

@@ -2704,8 +2704,8 @@ async function main() {
   await initDb();
   const server = createServer(app);
   setupWebSocket(server);
-  server.listen(port, "::", () => {
-    console.log(`YuiRoom backend listening on [::]:${port}`);
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`YuiRoom backend listening on 0.0.0.0:${port}`);
   });
 }
 

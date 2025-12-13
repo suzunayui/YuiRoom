@@ -13,6 +13,7 @@ RUN cd renderer && npm run build
 
 FROM caddy:2-alpine
 
+RUN apk add --no-cache wget
+
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /app/renderer/dist /var/www/yuiroom/renderer/dist
-

@@ -17,9 +17,9 @@ yuiroom.net {
 
   # Backend API (strip /api)
   handle_path /api/* {
-    reverse_proxy 127.0.0.1:3000
+    reverse_proxy backend:3000
   }
 
   # WebSocket
-  reverse_proxy /ws 127.0.0.1:3000
+  reverse_proxy /ws backend:3000
 }

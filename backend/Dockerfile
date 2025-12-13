@@ -9,5 +9,6 @@ COPY . .
 
 EXPOSE 3000
 
-CMD ["npm", "run", "start", "--silent"]
+RUN apk add --no-cache wget
 
+CMD ["npm", "run", "start", "--silent"]

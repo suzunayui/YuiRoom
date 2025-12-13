@@ -38,6 +38,13 @@ type NotificationItem =
 
 const USER_ID_REGEX = /^[a-z0-9_-]{3,32}$/;
 
+type UserActionStatus =
+  | { kind: "self" }
+  | { kind: "friend"; friend: FriendUser }
+  | { kind: "outgoing"; requestId: string }
+  | { kind: "incoming"; requestId: string }
+  | { kind: "none" };
+
 function normalizeUserId(v: string) {
   return v.trim().toLowerCase();
 }
@@ -154,6 +161,10 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [userAction, setUserAction] = useState<null | { userId: string; displayName: string; hasAvatar: boolean }>(null);
+  const [userActionStatus, setUserActionStatus] = useState<UserActionStatus | null>(null);
+  const [userActionBusy, setUserActionBusy] = useState(false);
+  const [userActionError, setUserActionError] = useState<string | null>(null);
 
   // 仮：ログイン状態（後でパスキーに差し替え）
   const [authed, setAuthed] = useState(false);
@@ -1472,6 +1483,113 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    if (!authed) return;
+    if (!userAction) return;
+    void refreshUserActionStatus(userAction.userId);
+  }, [authed, userAction?.userId]);
+
+  function openUserActions(userId: string, hint?: { displayName?: string; hasAvatar?: boolean }) {
+    const m = memberPane.find((x) => x.userId === userId) || null;
+    const displayName = (m?.displayName || hint?.displayName || userId).trim() || userId;
+    const hasAvatar = !!(m?.hasAvatar ?? hint?.hasAvatar);
+    setUserAction({ userId, displayName, hasAvatar });
+    setUserActionStatus(null);
+    setUserActionError(null);
+  }
+
+  function closeUserActions() {
+    if (userActionBusy) return;
+    setUserAction(null);
+    setUserActionStatus(null);
+    setUserActionError(null);
+  }
+
+  async function refreshUserActionStatus(targetUserId: string) {
+    setUserActionBusy(true);
+    setUserActionError(null);
+    try {
+      if (currentUserId && targetUserId === currentUserId) {
+        setUserActionStatus({ kind: "self" });
+        return;
+      }
+
+      const [friendsList, reqs] = await Promise.all([api.listFriends(), api.listFriendRequests()]);
+
+      const friend = friendsList.find((f) => f.userId === targetUserId) || null;
+      if (friend) {
+        setUserActionStatus({ kind: "friend", friend });
+        return;
+      }
+
+      const outgoing = reqs.outgoing.find((r) => r.userId === targetUserId) || null;
+      if (outgoing) {
+        setUserActionStatus({ kind: "outgoing", requestId: outgoing.id });
+        return;
+      }
+
+      const incoming = reqs.incoming.find((r) => r.userId === targetUserId) || null;
+      if (incoming) {
+        setUserActionStatus({ kind: "incoming", requestId: incoming.id });
+        return;
+      }
+
+      setUserActionStatus({ kind: "none" });
+    } catch (e: any) {
+      setUserActionError(e?.message ?? "failed");
+    } finally {
+      setUserActionBusy(false);
+    }
+  }
+
+  async function userActionSendFriendRequest() {
+    if (!userAction) return;
+    if (userActionBusy) return;
+    setUserActionBusy(true);
+    setUserActionError(null);
+    try {
+      await api.sendFriendRequest(userAction.userId);
+      setToast("フレンド申請を送ったよ");
+      await refreshUserActionStatus(userAction.userId);
+    } catch (e: any) {
+      setUserActionError(e?.message ?? "failed");
+    } finally {
+      setUserActionBusy(false);
+    }
+  }
+
+  async function userActionAcceptFriendRequest(requestId: string) {
+    if (!userAction) return;
+    if (userActionBusy) return;
+    setUserActionBusy(true);
+    setUserActionError(null);
+    try {
+      await api.acceptFriendRequest(requestId);
+      setToast("フレンド申請を承認したよ");
+      await refreshUserActionStatus(userAction.userId);
+    } catch (e: any) {
+      setUserActionError(e?.message ?? "failed");
+    } finally {
+      setUserActionBusy(false);
+    }
+  }
+
+  async function userActionRejectFriendRequest(requestId: string) {
+    if (!userAction) return;
+    if (userActionBusy) return;
+    setUserActionBusy(true);
+    setUserActionError(null);
+    try {
+      await api.rejectFriendRequest(requestId);
+      setToast("フレンド申請を拒否したよ");
+      await refreshUserActionStatus(userAction.userId);
+    } catch (e: any) {
+      setUserActionError(e?.message ?? "failed");
+    } finally {
+      setUserActionBusy(false);
+    }
+  }
+
   return (
     <div className={`app ${authed ? "authed" : ""}`}>
       {authed ? (
@@ -1976,16 +2094,17 @@ export default function App() {
               <MessageArea
                 selectedChannelId={selectedChannelId}
                 selectedChannelName={selectedChannelName}
-                onAuthorClick={
-                  tree?.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                    ? ({ userId }) => openBanModal(userId)
-                    : undefined
-                }
+                onAuthorClick={({ userId, displayName }) => openUserActions(userId, { displayName })}
                 currentUserId={currentUserId}
                 canModerate={!!(tree?.room.owner_id && currentUserId && tree.room.owner_id === currentUserId)}
                 mentionCandidates={memberPane.map((m) => ({ userId: m.userId, displayName: m.displayName }))}
               />
-              <MemberPane members={memberPane} loading={memberPaneLoading} error={memberPaneError} />
+              <MemberPane
+                members={memberPane}
+                loading={memberPaneLoading}
+                error={memberPaneError}
+                onMemberClick={(m) => openUserActions(m.userId, { displayName: m.displayName, hasAvatar: m.hasAvatar })}
+              />
             </div>
           )}
         </div>
@@ -2521,6 +2640,221 @@ export default function App() {
             {deleteError && (
               <div style={{ color: "#ff7a7a", fontSize: 12, lineHeight: 1.3 }}>{deleteError}</div>
             )}
+          </div>
+        </Modal>
+      )}
+
+      {authed && userAction && (
+        <Modal
+          title="ユーザー"
+          onClose={closeUserActions}
+          footer={
+            <>
+              <button
+                onClick={closeUserActions}
+                disabled={userActionBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #40444b",
+                  background: "transparent",
+                  color: "#dcddde",
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                閉じる
+              </button>
+              {selectedRoomId &&
+                selectedRoomId !== HOME_ID &&
+                tree?.room.owner_id &&
+                currentUserId &&
+                tree.room.owner_id === currentUserId &&
+                userAction.userId !== currentUserId && (
+                  <button
+                    onClick={() => {
+                      closeUserActions();
+                      openBanModal(userAction.userId);
+                    }}
+                    disabled={userActionBusy}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "#ed4245",
+                      color: "#ffffff",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 900,
+                      opacity: userActionBusy ? 0.7 : 1,
+                    }}
+                  >
+                    BAN…
+                  </button>
+                )}
+            </>
+          }
+        >
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: "50%",
+                  background: "#7289da",
+                  display: "grid",
+                  placeItems: "center",
+                  overflow: "hidden",
+                  flexShrink: 0,
+                  color: "#ffffff",
+                  fontWeight: 900,
+                  fontSize: 16,
+                }}
+                title={userAction.displayName}
+              >
+                {userAction.hasAvatar ? (
+                  <img
+                    src={api.userAvatarUrl(userAction.userId)}
+                    alt="avatar"
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
+                ) : (
+                  userAction.displayName?.[0]?.toUpperCase?.() ?? "?"
+                )}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontWeight: 900,
+                    color: "#ffffff",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {userAction.displayName}
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "#b9bbbe",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                  }}
+                >
+                  {userAction.userId}
+                </div>
+              </div>
+            </div>
+
+            {userActionError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{userActionError}</div>}
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+              {userActionStatus?.kind === "friend" && (
+                <button
+                  onClick={() => {
+                    setSelectedRoomId(HOME_ID);
+                    void openDmWith(userActionStatus.friend);
+                    closeUserActions();
+                  }}
+                  disabled={userActionBusy}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: "#3ba55c",
+                    color: "#111",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: 900,
+                    opacity: userActionBusy ? 0.7 : 1,
+                  }}
+                >
+                  DMを開く
+                </button>
+              )}
+
+              {userActionStatus?.kind === "none" && (
+                <button
+                  onClick={() => void userActionSendFriendRequest()}
+                  disabled={userActionBusy}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: "#7289da",
+                    color: "#ffffff",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: 900,
+                    opacity: userActionBusy ? 0.7 : 1,
+                  }}
+                >
+                  フレンド申請
+                </button>
+              )}
+
+              {userActionStatus?.kind === "outgoing" && (
+                <button
+                  disabled
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #40444b",
+                    background: "transparent",
+                    color: "#b9bbbe",
+                    cursor: "default",
+                    fontSize: 13,
+                    fontWeight: 900,
+                    opacity: 0.85,
+                  }}
+                >
+                  申請中
+                </button>
+              )}
+
+              {userActionStatus?.kind === "incoming" && (
+                <>
+                  <button
+                    onClick={() => void userActionAcceptFriendRequest(userActionStatus.requestId)}
+                    disabled={userActionBusy}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "#3ba55c",
+                      color: "#111",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 900,
+                      opacity: userActionBusy ? 0.7 : 1,
+                    }}
+                  >
+                    承認
+                  </button>
+                  <button
+                    onClick={() => void userActionRejectFriendRequest(userActionStatus.requestId)}
+                    disabled={userActionBusy}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "#ed4245",
+                      color: "#ffffff",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 900,
+                      opacity: userActionBusy ? 0.7 : 1,
+                    }}
+                  >
+                    拒否
+                  </button>
+                </>
+              )}
+
+              {userActionStatus?.kind === "self" && <div style={{ color: "#b9bbbe", fontSize: 12 }}>自分だよ</div>}
+              {!userActionStatus && <div style={{ color: "#b9bbbe", fontSize: 12 }}>読み込み中…</div>}
+            </div>
           </div>
         </Modal>
       )}

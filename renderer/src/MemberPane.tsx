@@ -5,6 +5,7 @@ type Props = {
   members: RoomMember[];
   loading: boolean;
   error: string | null;
+  onMemberClick?: (member: { userId: string; displayName: string; hasAvatar: boolean }) => void;
 };
 
 function byName(a: RoomMember, b: RoomMember) {
@@ -15,7 +16,7 @@ function byName(a: RoomMember, b: RoomMember) {
   return 0;
 }
 
-export function MemberPane({ members, loading, error }: Props) {
+export function MemberPane({ members, loading, error, onMemberClick }: Props) {
   const online = members.filter((m) => !!m.online).sort(byName);
   const offline = members.filter((m) => !m.online).sort(byName);
 
@@ -58,7 +59,24 @@ export function MemberPane({ members, loading, error }: Props) {
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
                 {online.map((m) => (
-                  <div key={m.userId} style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <button
+                    key={m.userId}
+                    type="button"
+                    onClick={() => onMemberClick?.({ userId: m.userId, displayName: m.displayName, hasAvatar: m.hasAvatar })}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      minWidth: 0,
+                      border: "none",
+                      background: "transparent",
+                      color: "inherit",
+                      cursor: onMemberClick ? "pointer" : "default",
+                      padding: 0,
+                      textAlign: "left",
+                    }}
+                    title={m.displayName}
+                  >
                     <div
                       style={{
                         width: 28,
@@ -93,7 +111,7 @@ export function MemberPane({ members, loading, error }: Props) {
                         {m.userId}
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -104,7 +122,25 @@ export function MemberPane({ members, loading, error }: Props) {
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
                 {offline.map((m) => (
-                  <div key={m.userId} style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, opacity: 0.8 }}>
+                  <button
+                    key={m.userId}
+                    type="button"
+                    onClick={() => onMemberClick?.({ userId: m.userId, displayName: m.displayName, hasAvatar: m.hasAvatar })}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      minWidth: 0,
+                      opacity: 0.8,
+                      border: "none",
+                      background: "transparent",
+                      color: "inherit",
+                      cursor: onMemberClick ? "pointer" : "default",
+                      padding: 0,
+                      textAlign: "left",
+                    }}
+                    title={m.displayName}
+                  >
                     <div
                       style={{
                         width: 28,
@@ -139,7 +175,7 @@ export function MemberPane({ members, loading, error }: Props) {
                         {m.userId}
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}

@@ -69,6 +69,50 @@ function validateDisplayName(name: string): string | null {
   return null;
 }
 
+function inviteBaseOrigin(): string {
+  try {
+    return new URL(api.base()).origin;
+  } catch {
+    try {
+      return window.location.origin;
+    } catch {
+      return "";
+    }
+  }
+}
+
+function inviteUrlFromCode(code: string): string {
+  const origin = inviteBaseOrigin();
+  const c = String(code || "").trim();
+  return origin ? `${origin}/invite/${encodeURIComponent(c)}` : `/invite/${encodeURIComponent(c)}`;
+}
+
+function extractInviteCode(input: string): string {
+  const v = String(input ?? "").trim();
+  if (!v) return "";
+  if (/^[a-z0-9]{6,32}$/i.test(v)) return v.toLowerCase();
+
+  const m1 = /(?:^|\/)(?:invite|invites)\/([a-z0-9]{6,32})(?:$|[/?#])/i.exec(v);
+  if (m1?.[1]) return String(m1[1]).toLowerCase();
+
+  const m2 = /(?:^|[?&#])code=([a-z0-9]{6,32})(?:$|[&#])/i.exec(v);
+  if (m2?.[1]) return String(m2[1]).toLowerCase();
+
+  try {
+    const u = new URL(v);
+    const q = u.searchParams.get("code") ?? u.searchParams.get("invite") ?? "";
+    if (q && /^[a-z0-9]{6,32}$/i.test(q)) return q.toLowerCase();
+    const parts = u.pathname.split("/").filter(Boolean);
+    const idx = parts.findIndex((p) => p === "invite" || p === "invites");
+    const cand = idx >= 0 ? parts[idx + 1] : parts[parts.length - 1];
+    if (cand && /^[a-z0-9]{6,32}$/i.test(cand)) return cand.toLowerCase();
+  } catch {
+    // ignore
+  }
+
+  return "";
+}
+
 function displayNameKey(userId: string) {
   return `yuiroom.displayName:${userId}`;
 }
@@ -153,6 +197,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>("login");
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileDrawer, setMobileDrawer] = useState<null | "rooms" | "nav" | "members">(null);
+  const pendingInviteRef = useRef<string | null>(null);
 
   const [rememberUserId, setRememberUserId] = useState(true);
 
@@ -431,6 +476,29 @@ export default function App() {
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, []);
+
+  useEffect(() => {
+    try {
+      const path = String(window.location?.pathname ?? "");
+      const m = /^\/invite\/([a-z0-9]{6,32})(?:\/)?$/i.exec(path);
+      if (m?.[1]) {
+        pendingInviteRef.current = String(m[1]).toLowerCase();
+        window.history.replaceState({}, "", "/");
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authed) return;
+    const code = pendingInviteRef.current;
+    if (!code) return;
+    pendingInviteRef.current = null;
+    setJoinOpen(true);
+    setJoinCode(inviteUrlFromCode(code));
+    setJoinError(null);
+  }, [authed]);
 
   useEffect(() => {
     let raf = 0;
@@ -1569,7 +1637,7 @@ export default function App() {
     try {
       await api.createRoomInvite(inviteModal.roomId);
       await refreshInvites();
-      setToast("招待コードを発行しました");
+      setToast("招待URLを発行しました");
     } catch (e: any) {
       setInviteError(e?.message ?? "failed");
     } finally {
@@ -1580,7 +1648,7 @@ export default function App() {
   async function deleteInvite(code: string) {
     if (!inviteModal || inviteBusy) return;
     if (!inviteModal.isOwner) return;
-    const ok = window.confirm("この招待コードを削除しますか？");
+    const ok = window.confirm("この招待URLを削除しますか？");
     if (!ok) return;
     setInviteBusy(true);
     setInviteError(null);
@@ -1670,7 +1738,7 @@ export default function App() {
 
   async function submitJoin() {
     if (joinBusy) return;
-    const code = joinCode.trim();
+    const code = extractInviteCode(joinCode);
     if (!code) return;
     setJoinBusy(true);
     setJoinError(null);
@@ -1895,7 +1963,6 @@ export default function App() {
               selectedRoomId={selectedRoomId}
               onSelectRoom={setSelectedRoomId}
               onRequestCreateRoom={roomsLoading ? undefined : openCreateRoom}
-              onRequestJoinRoom={roomsLoading ? undefined : openJoinModal}
               homeId={HOME_ID}
             />
           )}
@@ -2816,7 +2883,7 @@ export default function App() {
                     opacity: roomsLoading ? 0.7 : 1,
                   }}
                 >
-                  招待コードで参加
+                  招待URLで参加
                 </button>
               </div>
             </Drawer>
@@ -3466,6 +3533,29 @@ export default function App() {
             </label>
             {createError && (
               <div style={{ color: "#ff7a7a", fontSize: 12, lineHeight: 1.3 }}>{createError}</div>
+            )}
+            {createModal.kind === "room" && (
+              <button
+                type="button"
+                onClick={() => {
+                  closeModal();
+                  openJoinModal();
+                }}
+                disabled={createBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #40444b",
+                  background: "transparent",
+                  color: "#dcddde",
+                  cursor: createBusy ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                  fontWeight: 800,
+                  opacity: createBusy ? 0.7 : 1,
+                }}
+              >
+                招待URLで参加
+              </button>
             )}
           </div>
         </Modal>
@@ -4166,11 +4256,11 @@ export default function App() {
                     disabled={inviteBusy}
                     style={{ width: "100%" }}
                   >
-                    {inviteBusy ? "処理中…" : "招待コードを発行"}
+                    {inviteBusy ? "処理中…" : "招待URLを発行"}
                   </button>
                 </div>
 
-                <div style={{ fontSize: 12, color: "#b9bbbe" }}>発行中の招待コード</div>
+                <div style={{ fontSize: 12, color: "#b9bbbe" }}>発行中の招待URL</div>
                 {invites.length === 0 ? (
                   <div style={{ fontSize: 12, opacity: 0.8 }}>なし</div>
                 ) : (
@@ -4204,14 +4294,14 @@ export default function App() {
                           title="クリックでコピー"
                           onClick={async () => {
                             try {
-                              await navigator.clipboard.writeText(inv.code);
+                              await navigator.clipboard.writeText(inviteUrlFromCode(inv.code));
                               setToast("コピーしました");
                             } catch {
                               setToast("コピーできませんでした");
                             }
                           }}
                         >
-                          {inv.code}
+                          {inviteUrlFromCode(inv.code)}
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, color: "#b9bbbe", flexWrap: "wrap" }}>
                           <div>使用回数: {inv.uses}/{inv.max_uses}</div>
@@ -4226,7 +4316,7 @@ export default function App() {
                           <button
                             onClick={async () => {
                               try {
-                                await navigator.clipboard.writeText(inv.code);
+                                await navigator.clipboard.writeText(inviteUrlFromCode(inv.code));
                                 setToast("コピーしました");
                               } catch {
                                 setToast("コピーできませんでした");
@@ -4457,7 +4547,7 @@ export default function App() {
 
       {authed && joinOpen && (
         <Modal
-          title="招待コードで参加"
+          title="招待URLで参加"
           onClose={closeJoinModal}
           footer={
             <>
@@ -4478,7 +4568,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => void submitJoin()}
-                disabled={joinBusy || !joinCode.trim()}
+                disabled={joinBusy || !extractInviteCode(joinCode)}
                 style={{
                   padding: "10px 12px",
                   borderRadius: 8,
@@ -4488,7 +4578,7 @@ export default function App() {
                   cursor: "pointer",
                   fontSize: 13,
                   fontWeight: 800,
-                  opacity: joinBusy || !joinCode.trim() ? 0.7 : 1,
+                  opacity: joinBusy || !extractInviteCode(joinCode) ? 0.7 : 1,
                 }}
               >
                 {joinBusy ? "参加中…" : "参加"}
@@ -4498,12 +4588,12 @@ export default function App() {
         >
           <div style={{ display: "grid", gap: 10 }}>
             <label className="label">
-              招待コード
+              招待URL（またはコード）
               <input
                 className="input"
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value)}
-                placeholder="例: a1b2c3d4e5f6"
+                placeholder="例: https://yuiroom.net/invite/abcdef または abcdef"
                 disabled={joinBusy}
                 autoCapitalize="off"
                 autoCorrect="off"

@@ -5,31 +5,25 @@ type Props = {
   selectedRoomId: string | null;
   onSelectRoom: (id: string) => void;
   onRequestCreateRoom?: () => void;
-  onRequestJoinRoom?: () => void;
   homeId?: string;
 };
 
-export function ServerList({
-  rooms,
-  selectedRoomId,
-  onSelectRoom,
-  onRequestCreateRoom,
-  onRequestJoinRoom,
-  homeId,
-}: Props) {
+export function ServerList({ rooms, selectedRoomId, onSelectRoom, onRequestCreateRoom, homeId }: Props) {
   return (
-    <div style={{
-      width: 72,
-      minWidth: 72,
-      flexShrink: 0,
-      background: "#202225",
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      padding: "12px 0",
-      height: "var(--app-height)",
-      overflowY: "auto"
-    }}>
+    <div
+      style={{
+        width: 72,
+        minWidth: 72,
+        flexShrink: 0,
+        background: "#202225",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        padding: "12px 0",
+        height: "var(--app-height)",
+        overflowY: "auto",
+      }}
+    >
       {homeId && (
         <>
           <button
@@ -85,7 +79,7 @@ export function ServerList({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              transition: "border-radius 0.2s, background 0.1s ease"
+              transition: "border-radius 0.2s, background 0.1s ease",
             }}
             onMouseEnter={(e) => {
               if (!active) e.currentTarget.style.background = "#40444b";
@@ -117,36 +111,13 @@ export function ServerList({
             placeItems: "center",
             marginTop: 8,
           }}
-          title="Roomを作成"
+          title="ルーム作成"
+          aria-label="ルーム作成"
         >
           +
         </button>
       )}
-
-      {onRequestJoinRoom && (
-        <button
-          onClick={onRequestJoinRoom}
-          style={{
-            width: 48,
-            height: 36,
-            borderRadius: 10,
-            background: "transparent",
-            border: "1px solid #40444b",
-            color: "#8e9297",
-            fontWeight: 900,
-            fontSize: 14,
-            cursor: "pointer",
-            display: "grid",
-            placeItems: "center",
-            marginTop: 10,
-          }}
-          title="招待コードで参加"
-          aria-label="招待コードで参加"
-        >
-          INV
-        </button>
-      )}
-
     </div>
   );
 }
+

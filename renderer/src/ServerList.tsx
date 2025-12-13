@@ -20,6 +20,8 @@ export function ServerList({
   return (
     <div style={{
       width: 72,
+      minWidth: 72,
+      flexShrink: 0,
       background: "#202225",
       display: "flex",
       flexDirection: "column",

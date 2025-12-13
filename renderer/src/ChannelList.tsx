@@ -40,6 +40,8 @@ export function ChannelList({
   return (
     <div style={{
       width: 240,
+      minWidth: 240,
+      flexShrink: 0,
       background: "#2f3136",
       color: "#dcddde",
       padding: "16px 0",

@@ -30,11 +30,55 @@ services:
       POSTGRES_USER: yuiroom
       POSTGRES_DB: yuiroom
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./secrets:/run/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yuiroom -d yuiroom"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: yuiroom-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL_FILE: /run/secrets/database_url
+      AUTH_SECRET_FILE: /run/secrets/auth_secret
+      CORS_ORIGIN: https://yuiroom.net
+      WS_ORIGIN: https://yuiroom.net
+      RP_ID: yuiroom.net
+      RP_ORIGIN: https://yuiroom.net
+      RP_NAME: YuiRoom
+    volumes:
+      - ./secrets:/run/secrets:ro
+
+  caddy:
+    build:
+      context: .
+      dockerfile: deploy/caddy/Dockerfile
+      args:
+        VITE_API_BASE: /api
+    container_name: yuiroom-caddy
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

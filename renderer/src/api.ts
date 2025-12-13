@@ -56,6 +56,18 @@ export type RoomMember = {
   online?: boolean;
 };
 
+export type AuditLog = {
+  id: string;
+  roomId: string;
+  action: string;
+  actorId: string;
+  actorDisplayName: string;
+  targetType: string | null;
+  targetId: string | null;
+  meta: any;
+  created_at: string;
+};
+
 export type ChannelActivity = {
   channelId: string;
   lastMessageAt: string | null;
@@ -243,6 +255,12 @@ export const api = {
     deleteJson<{ ok: boolean }>(`/rooms/${encodeURIComponent(roomId)}/invites/${encodeURIComponent(code)}`),
   listRoomMembers: (roomId: string) =>
     getJson<RoomMember[]>(`/rooms/${encodeURIComponent(roomId)}/members`),
+  listRoomAudit: (roomId: string, opts?: { before?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    q.set("limit", String(opts?.limit ?? 50));
+    if (opts?.before) q.set("before", opts.before);
+    return getJson<AuditLog[]>(`/rooms/${encodeURIComponent(roomId)}/audit?${q.toString()}`);
+  },
   listChannelActivity: (roomId: string) =>
     getJson<ChannelActivity[]>(`/rooms/${encodeURIComponent(roomId)}/channels/activity`),
   leaveRoom: (roomId: string) =>
@@ -259,8 +277,17 @@ export const api = {
     deleteJson<{ ok: boolean }>(`/rooms/${encodeURIComponent(roomId)}/bans/${encodeURIComponent(userId)}`),
   attachmentUrl: (attachmentId: string) => {
     const base = apiBase();
-    const token = authToken ? encodeURIComponent(authToken) : "";
-    return `${base}/attachments/${encodeURIComponent(attachmentId)}${token ? `?token=${token}` : ""}`;
+    return `${base}/attachments/${encodeURIComponent(attachmentId)}`;
+  },
+  fetchAttachmentBlob: async (attachmentId: string): Promise<Blob> => {
+    const base = apiBase();
+    const res = await fetch(`${base}/attachments/${encodeURIComponent(attachmentId)}`, { headers: authHeaders() });
+    await handleAuthFailure(res);
+    if (!res.ok) {
+      const msg = await extractError(res);
+      throw new Error(msg ?? `HTTP ${res.status}`);
+    }
+    return await res.blob();
   },
   userAvatarUrl: (userId: string) => `${apiBase()}/users/${encodeURIComponent(userId)}/avatar`,
   setUserAvatar: (userId: string, dataUrl: string | null) =>

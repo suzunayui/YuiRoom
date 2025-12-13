@@ -1,0 +1,16 @@
+[Unit]
+Description=YuiRoom Backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/yuiroom/backend
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/yuiroom/backend/.env
+ExecStart=/usr/bin/npm run start --silent
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

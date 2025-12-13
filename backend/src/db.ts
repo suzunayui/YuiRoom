@@ -1,7 +1,23 @@
 import { Pool } from "pg";
+import { readFileSync } from "node:fs";
+
+function readEnvOrFile(name: string): string | null {
+  const direct = (process.env[name] ?? "").trim();
+  if (direct) return direct;
+  const path = (process.env[`${name}_FILE`] ?? "").trim();
+  if (!path) return null;
+  try {
+    const v = readFileSync(path, "utf-8").trim();
+    return v ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+const databaseUrl = readEnvOrFile("DATABASE_URL");
 
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  ...(databaseUrl ? { connectionString: databaseUrl } : {}),
 });
 
 export async function initDb() {
@@ -214,29 +230,25 @@ export async function initDb() {
 
     ALTER TABLE room_invites
       ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '7 days');
+
+    -- audit logs (room owner can view)
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      meta JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_room_created_at
+      ON audit_logs(room_id, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_created_at
+      ON audit_logs(actor_id, created_at DESC);
   `);
 
   // seed: ルームが空なら1セット作る
-  const { rows } = await pool.query(`SELECT COUNT(*)::int AS c FROM rooms`);
-  if (rows[0].c === 0) {
-    await pool.query("BEGIN");
-    try {
-      await pool.query(`INSERT INTO rooms (id, name) VALUES ($1, $2)`, ["room_1", "Room 1"]);
-      await pool.query(
-        `INSERT INTO categories (id, room_id, name, position) VALUES
-         ('cat_1', 'room_1', 'Category 1', 0),
-         ('cat_2', 'room_1', 'Category 2', 1)`
-      );
-      await pool.query(
-        `INSERT INTO channels (id, room_id, category_id, name, position) VALUES
-         ('ch_general', 'room_1', 'cat_1', 'general', 0),
-         ('ch_dev',     'room_1', 'cat_1', 'dev', 1),
-         ('ch_random',  'room_1', 'cat_2', 'random', 0)`
-      );
-      await pool.query("COMMIT");
-    } catch (e) {
-      await pool.query("ROLLBACK");
-      throw e;
-    }
-  }
 }

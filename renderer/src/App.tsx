@@ -10,6 +10,7 @@ import { MemberPane } from "./MemberPane";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type { DmMessage, FriendRequests, FriendUser } from "./api";
 import type { RoomMember } from "./api";
+import type { AuditLog } from "./api";
 import { realtime } from "./realtime";
 
 type Mode = "login" | "register";
@@ -163,6 +164,8 @@ export default function App() {
   const [inviteModal, setInviteModal] = useState<null | { roomId: string; roomName: string; isOwner: boolean }>(null);
   const [invites, setInvites] = useState<Array<{ code: string; uses: number; max_uses: number; expires_at: string; created_at: string }>>([]);
   const [members, setMembers] = useState<Array<{ userId: string; displayName: string; hasAvatar: boolean; isOwner: boolean }>>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
 
@@ -1078,14 +1081,18 @@ export default function App() {
     try {
       const isOwner = room.owner_id === currentUserId;
       setInviteModal({ roomId: room.id, roomName: room.name, isOwner });
-      const [m, inv] = await Promise.all([
+      const [m, inv, logs] = await Promise.all([
         api.listRoomMembers(room.id),
         isOwner ? api.listRoomInvites(room.id) : Promise.resolve([]),
+        isOwner ? api.listRoomAudit(room.id, { limit: 50 }) : Promise.resolve([] as AuditLog[]),
       ]);
       setMembers(m);
       setInvites(inv);
+      setAuditLogs(logs);
+      setAuditError(null);
     } catch (e: any) {
       setInviteError(e?.message ?? "failed");
+      setAuditError(null);
       setToast(e?.message ?? "failed");
     } finally {
       setInviteBusy(false);
@@ -1098,7 +1105,23 @@ export default function App() {
     setInviteError(null);
     setInvites([]);
     setMembers([]);
+    setAuditLogs([]);
+    setAuditError(null);
     setConfirmModal(null);
+  }
+
+  async function refreshAudit() {
+    if (!inviteModal || !inviteModal.isOwner) return;
+    setInviteBusy(true);
+    setAuditError(null);
+    try {
+      const logs = await api.listRoomAudit(inviteModal.roomId, { limit: 50 });
+      setAuditLogs(logs);
+    } catch (e: any) {
+      setAuditError(e?.message ?? "failed");
+    } finally {
+      setInviteBusy(false);
+    }
   }
 
   function closeConfirmModal() {
@@ -1305,7 +1328,12 @@ export default function App() {
       setCreateModal(null);
       setCreateName("");
     } catch (e: any) {
-      setCreateError(e?.message ?? "failed");
+      const msg = e?.message ?? "failed";
+      if (msg === "only_first_user_can_create_rooms") {
+        setCreateError("Room作成は最初に作成したアカウントのみ可能です");
+      } else {
+        setCreateError(msg);
+      }
     } finally {
       setCreateBusy(false);
     }
@@ -2626,6 +2654,100 @@ export default function App() {
                       </div>
                       );
                     })}
+                  </div>
+                )}
+
+                <div style={{ height: 1, background: "#202225" }} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <div style={{ fontSize: 12, color: "#b9bbbe" }}>監査ログ</div>
+                  <button
+                    onClick={() => void refreshAudit()}
+                    disabled={inviteBusy}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: "1px solid #40444b",
+                      background: "transparent",
+                      color: "#dcddde",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: 800,
+                      opacity: inviteBusy ? 0.7 : 1,
+                    }}
+                    title="更新"
+                  >
+                    更新
+                  </button>
+                </div>
+                {auditError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{auditError}</div>}
+                {auditLogs.length === 0 ? (
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>なし</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {auditLogs.slice(0, 50).map((l) => (
+                      <div
+                        key={l.id}
+                        style={{
+                          border: "1px solid #40444b",
+                          background: "#202225",
+                          borderRadius: 10,
+                          padding: "8px 10px",
+                          display: "grid",
+                          gap: 4,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12 }}>
+                          <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {l.actorDisplayName} ({l.actorId})
+                          </div>
+                          <div style={{ color: "#8e9297", flexShrink: 0 }}>{new Date(l.created_at).toLocaleString()}</div>
+                        </div>
+                        <div style={{ fontSize: 12, color: "#b9bbbe" }}>
+                          {(() => {
+                            const meta = l.meta && typeof l.meta === "object" ? (l.meta as any) : null;
+                            const label =
+                              l.action === "room_create"
+                                ? "room_create"
+                                : l.action === "room_delete"
+                                  ? "room_delete"
+                                  : l.action === "room_join"
+                                    ? "room_join"
+                                    : l.action === "room_leave"
+                                      ? "room_leave"
+                                      : l.action === "room_kick"
+                                        ? "room_kick"
+                                        : l.action === "room_ban"
+                                          ? "room_ban"
+                                          : l.action === "room_unban"
+                                            ? "room_unban"
+                                            : l.action === "invite_create"
+                                              ? "invite_create"
+                                              : l.action === "invite_delete"
+                                                ? "invite_delete"
+                                                : l.action === "message_edit"
+                                                  ? "message_edit"
+                                                  : l.action === "message_delete"
+                                                    ? "message_delete"
+                                                    : l.action === "category_create"
+                                                      ? "category_create"
+                                                      : l.action === "category_delete"
+                                                        ? "category_delete"
+                                                        : l.action === "channel_create"
+                                                          ? "channel_create"
+                                                          : l.action === "channel_delete"
+                                                            ? "channel_delete"
+                                                            : l.action;
+                            const extra: string[] = [];
+                            if (meta?.name) extra.push(`name=${String(meta.name)}`);
+                            if (meta?.reason) extra.push(`reason=${String(meta.reason)}`);
+                            if (meta?.inviteCode) extra.push(`code=${String(meta.inviteCode)}`);
+                            if (meta?.channelId) extra.push(`channel=${String(meta.channelId)}`);
+                            if (meta?.byOwner) extra.push("byOwner");
+                            return `${label}${l.targetId ? ` (${l.targetId})` : ""}${extra.length ? ` - ${extra.join(" ")}` : ""}`;
+                          })()}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
 

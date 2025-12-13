@@ -25,6 +25,84 @@ function formatTime(iso: string) {
   });
 }
 
+function AttachmentImage({ attachmentId }: { attachmentId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+
+    setUrl(null);
+    setFailed(false);
+
+    void (async () => {
+      try {
+        const blob = await api.fetchAttachmentBlob(attachmentId);
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      } catch {
+        if (!active) return;
+        setFailed(true);
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachmentId]);
+
+  if (failed) {
+    return (
+      <div
+        style={{
+          maxWidth: 420,
+          width: "100%",
+          borderRadius: 8,
+          border: "1px solid #3a3f47",
+          background: "#2b2d31",
+          color: "#8e9297",
+          padding: 12,
+          fontSize: 12,
+        }}
+      >
+        画像の読み込みに失敗しました
+      </div>
+    );
+  }
+
+  if (!url) {
+    return (
+      <div
+        style={{
+          maxWidth: 420,
+          width: "100%",
+          borderRadius: 8,
+          border: "1px solid #202225",
+          background: "#2b2d31",
+          height: 180,
+        }}
+      />
+    );
+  }
+
+  return (
+    <img
+      src={url}
+      alt="attachment"
+      loading="lazy"
+      style={{
+        maxWidth: 420,
+        width: "100%",
+        borderRadius: 8,
+        border: "1px solid #202225",
+      }}
+    />
+  );
+}
+
 export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorClick, currentUserId, canModerate }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -582,17 +660,7 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
                 {msg.attachments && msg.attachments.length > 0 && (
                   <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
                     {msg.attachments.map((a) => (
-                      <img
-                        key={a.id}
-                        src={api.attachmentUrl(a.id)}
-                        alt="attachment"
-                        style={{
-                          maxWidth: 420,
-                          width: "100%",
-                          borderRadius: 8,
-                          border: "1px solid #202225",
-                        }}
-                      />
+                      <AttachmentImage key={a.id} attachmentId={a.id} />
                     ))}
                   </div>
                 )}

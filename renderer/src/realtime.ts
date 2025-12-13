@@ -44,15 +44,26 @@ const roomMemberChangedHandlers = new Set<Handler<{ roomId: string; userId: stri
 const roomPresenceHandlers = new Set<Handler<{ roomId: string; userId: string; online: boolean }>>();
 
 function toWsBase(httpBase: string): string {
-  // http -> ws, https -> wss
-  if (httpBase.startsWith("https://")) return "wss://" + httpBase.slice("https://".length);
-  if (httpBase.startsWith("http://")) return "ws://" + httpBase.slice("http://".length);
-  return httpBase;
+  // http(s)://host[:port][/path] -> ws(s)://host[:port]
+  try {
+    const u = new URL(httpBase);
+    const wsProto = u.protocol === "https:" ? "wss:" : u.protocol === "http:" ? "ws:" : u.protocol;
+    return `${wsProto}//${u.host}`;
+  } catch {
+    try {
+      const origin = window.location.origin;
+      const u = new URL(origin);
+      const wsProto = u.protocol === "https:" ? "wss:" : u.protocol === "http:" ? "ws:" : u.protocol;
+      return `${wsProto}//${u.host}`;
+    } catch {
+      return httpBase;
+    }
+  }
 }
 
-function wsUrl(token: string) {
+function wsUrl() {
   const base = toWsBase(api.base());
-  return `${base}/ws?token=${encodeURIComponent(token)}`;
+  return `${base}/ws`;
 }
 
 function ensureConnected() {
@@ -71,7 +82,7 @@ function ensureConnected() {
   opening = true;
 
   try {
-    ws = new WebSocket(wsUrl(token));
+    ws = new WebSocket(wsUrl(), [`bearer.${token}`]);
   } catch {
     opening = false;
     ws = null;

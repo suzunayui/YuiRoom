@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { initDb, pool } from "./db.js";
 import { randomUUID, createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -145,13 +146,77 @@ async function wsRemoveUserFromRoom(userId: string, roomId: string, reasonType: 
   wsBroadcastUserAll(userId, { type: reasonType, roomId });
 }
 
+const wsConnRateState = new Map<string, { resetAt: number; count: number }>();
+const wsMsgRateState = new Map<string, { resetAt: number; count: number }>();
+let wsMsgCleanupCounter = 0;
+
+function wsAllowConnection(remoteAddress: string) {
+  const key = `ws_conn:${remoteAddress || "unknown"}`;
+  const now = Date.now();
+  const cur = wsConnRateState.get(key);
+  if (!cur || now >= cur.resetAt) {
+    wsConnRateState.set(key, { resetAt: now + 60_000, count: 1 });
+    return true;
+  }
+  if (cur.count >= 60) return false;
+  cur.count += 1;
+  return true;
+}
+
+function wsRateAllow(opts: { name: string; userId: string; windowMs: number; max: number }) {
+  const key = `${opts.name}:u:${opts.userId}`;
+  const now = Date.now();
+  const cur = wsMsgRateState.get(key);
+
+  if (!cur || now >= cur.resetAt) {
+    wsMsgRateState.set(key, { resetAt: now + opts.windowMs, count: 1 });
+    if ((wsMsgCleanupCounter++ & 0xff) === 0) {
+      for (const [k, v] of wsMsgRateState) {
+        if (now >= v.resetAt) wsMsgRateState.delete(k);
+      }
+    }
+    return true;
+  }
+
+  if (cur.count >= opts.max) return false;
+  cur.count += 1;
+  return true;
+}
+
 function setupWebSocket(server: ReturnType<typeof createServer>) {
   const wss = new WebSocketServer({ server, path: "/ws" });
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     try {
+      const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+      const wsOriginAllowlist = ((process.env.WS_ORIGIN ?? "").trim() || corsOriginRaw || "http://localhost:5173")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (origin && !wsOriginAllowlist.includes(origin)) {
+        ws.close(1008, "origin_forbidden");
+        return;
+      }
+
+      const remote = req.socket.remoteAddress || "unknown";
+      if (!wsAllowConnection(remote)) {
+        ws.close(1013, "rate_limited");
+        return;
+      }
+
       const url = new URL(req.url || "/ws", "http://localhost");
-      const token = url.searchParams.get("token") || "";
+      const protocol = typeof (ws as any).protocol === "string" ? String((ws as any).protocol) : "";
+      let token = "";
+      if (protocol.startsWith("bearer.")) token = protocol.slice("bearer.".length);
+      if (!token) {
+        const header = String(req.headers["sec-websocket-protocol"] || "");
+        for (const p of header.split(",").map((s) => s.trim())) {
+          if (p.startsWith("bearer.")) {
+            token = p.slice("bearer.".length);
+            break;
+          }
+        }
+      }
       const userId = token ? verifyAuthToken(token) : null;
       if (!userId) {
         ws.close(1008, "unauthorized");
@@ -173,6 +238,29 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
       }
 
       ws.on("message", async (raw: RawData) => {
+        // Basic protection against huge messages / abuse.
+        let rawLen = 0;
+        if (raw instanceof Buffer) rawLen = raw.length;
+        else if (raw instanceof ArrayBuffer) rawLen = raw.byteLength;
+        else if (Array.isArray(raw)) rawLen = raw.reduce((sum, b: any) => sum + (b?.length ?? 0), 0);
+        if (rawLen > 64 * 1024) {
+          try {
+            ws.close(1009, "message_too_big");
+          } catch {
+            // ignore
+          }
+          return;
+        }
+
+        if (!wsRateAllow({ name: "ws_any", userId: client.userId, windowMs: 10_000, max: 200 })) {
+          try {
+            ws.close(1013, "rate_limited");
+          } catch {
+            // ignore
+          }
+          return;
+        }
+
         let msg: any;
         try {
           msg = JSON.parse(String(raw || ""));
@@ -183,6 +271,10 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
 
         // subscribe / unsubscribe
         if (msg.type === "subscribe" && typeof msg.channelId === "string") {
+          if (!wsRateAllow({ name: "ws_subscribe", userId: client.userId, windowMs: 60_000, max: 120 })) {
+            wsSendSafe(client, { type: "error", error: "rate_limited" });
+            return;
+          }
           const channelId = msg.channelId;
 
           const ch = await pool.query(`SELECT room_id FROM channels WHERE id=$1`, [channelId]);
@@ -214,12 +306,20 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
           return;
         }
         if (msg.type === "unsubscribe" && typeof msg.channelId === "string") {
+          if (!wsRateAllow({ name: "ws_unsubscribe", userId: client.userId, windowMs: 60_000, max: 240 })) {
+            wsSendSafe(client, { type: "error", error: "rate_limited" });
+            return;
+          }
           const channelId = msg.channelId;
           client.channels.delete(channelId);
           wsUnsubscribe(wsByChannel, channelId, client);
           return;
         }
         if (msg.type === "subscribe_dm" && typeof msg.threadId === "string") {
+          if (!wsRateAllow({ name: "ws_subscribe_dm", userId: client.userId, windowMs: 60_000, max: 120 })) {
+            wsSendSafe(client, { type: "error", error: "rate_limited", threadId: msg.threadId });
+            return;
+          }
           const threadId = msg.threadId;
           // membership check
           const member = await pool.query(
@@ -251,6 +351,10 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
           return;
         }
         if (msg.type === "unsubscribe_dm" && typeof msg.threadId === "string") {
+          if (!wsRateAllow({ name: "ws_unsubscribe_dm", userId: client.userId, windowMs: 60_000, max: 240 })) {
+            wsSendSafe(client, { type: "error", error: "rate_limited", threadId: msg.threadId });
+            return;
+          }
           const threadId = msg.threadId;
           client.dmThreads.delete(threadId);
           wsUnsubscribe(wsByDmThread, threadId, client);
@@ -258,11 +362,19 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
         }
 
         if (msg.type === "subscribe_home") {
+          if (!wsRateAllow({ name: "ws_subscribe_home", userId: client.userId, windowMs: 60_000, max: 30 })) {
+            wsSendSafe(client, { type: "error", error: "rate_limited" });
+            return;
+          }
           client.home = true;
           wsSendSafe(client, { type: "subscribed_home" });
           return;
         }
         if (msg.type === "unsubscribe_home") {
+          if (!wsRateAllow({ name: "ws_unsubscribe_home", userId: client.userId, windowMs: 60_000, max: 60 })) {
+            wsSendSafe(client, { type: "error", error: "rate_limited" });
+            return;
+          }
           client.home = false;
           return;
         }
@@ -291,15 +403,79 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
 }
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+app.disable("x-powered-by");
+
+const trustProxy = (process.env.TRUST_PROXY ?? "").trim();
+if (trustProxy) {
+  if (trustProxy === "true") app.set("trust proxy", true);
+  else if (trustProxy === "false") app.set("trust proxy", false);
+  else if (/^\d+$/.test(trustProxy)) app.set("trust proxy", Number(trustProxy));
+  else app.set("trust proxy", trustProxy);
+}
+
+const corsOriginRaw = (process.env.CORS_ORIGIN ?? "").trim();
+const corsOrigins = (corsOriginRaw || "http://localhost:5173")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (corsOrigins.includes(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+    credentials: false,
+  })
+);
+
+app.use((req, res, next) => {
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("referrer-policy", "no-referrer");
+  res.setHeader("x-frame-options", "DENY");
+  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
+
+app.use((req, res, next) => {
+  if (req.path.startsWith("/auth/")) res.setHeader("cache-control", "no-store");
+  next();
+});
+
 app.use(express.json({ limit: "5mb" }));
 
 const RP_ID = process.env.RP_ID ?? "localhost";
 const RP_ORIGIN = process.env.RP_ORIGIN ?? "http://localhost:5173";
 const RP_NAME = process.env.RP_NAME ?? "YuiRoom";
 
-const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-secret-change-me";
+function readEnvOrFile(name: string): string | null {
+  const direct = (process.env[name] ?? "").trim();
+  if (direct) return direct;
+  const path = (process.env[`${name}_FILE`] ?? "").trim();
+  if (!path) return null;
+  try {
+    const v = readFileSync(path, "utf-8").trim();
+    return v ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+const AUTH_SECRET = readEnvOrFile("AUTH_SECRET") ?? "dev-secret-change-me";
 const TOKEN_TTL_SEC = 60 * 60 * 24 * 7; // 7 days
+
+if (process.env.NODE_ENV === "production" && AUTH_SECRET === "dev-secret-change-me") {
+  throw new Error("AUTH_SECRET must be set in production");
+}
+
+if (process.env.NODE_ENV === "production") {
+  if (!corsOriginRaw) throw new Error("CORS_ORIGIN must be set in production");
+  const wsOriginRaw = (process.env.WS_ORIGIN ?? "").trim();
+  if (!wsOriginRaw) throw new Error("WS_ORIGIN must be set in production");
+  if (!process.env.RP_ID?.trim()) throw new Error("RP_ID must be set in production");
+  if (!process.env.RP_ORIGIN?.trim()) throw new Error("RP_ORIGIN must be set in production");
+}
 
 const USER_ID_REGEX = /^[a-z0-9_-]{3,32}$/;
 
@@ -397,12 +573,55 @@ function authedUserId(req: express.Request): string | null {
   return verifyAuthToken(token);
 }
 
-function authedUserIdWithQueryToken(req: express.Request): string | null {
-  const headerUser = authedUserId(req);
-  if (headerUser) return headerUser;
-  const token = typeof req.query?.token === "string" ? req.query.token.trim() : "";
-  if (!token) return null;
-  return verifyAuthToken(token);
+type RateLimitConfig = {
+  name: string;
+  windowMs: number;
+  max: number;
+  key: (req: express.Request) => string;
+};
+
+const rateLimitState = new Map<string, { resetAt: number; count: number }>();
+let rateLimitCleanupCounter = 0;
+
+function clientIp(req: express.Request) {
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function rateLimit(config: RateLimitConfig) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const key = `${config.name}:${config.key(req)}`;
+    const now = Date.now();
+    const cur = rateLimitState.get(key);
+
+    if (!cur || now >= cur.resetAt) {
+      rateLimitState.set(key, { resetAt: now + config.windowMs, count: 1 });
+      if ((rateLimitCleanupCounter++ & 0xff) === 0) {
+        for (const [k, v] of rateLimitState) {
+          if (now >= v.resetAt) rateLimitState.delete(k);
+        }
+      }
+      return next();
+    }
+
+    if (cur.count >= config.max) {
+      const retryAfterSec = Math.max(1, Math.ceil((cur.resetAt - now) / 1000));
+      res.setHeader("retry-after", String(retryAfterSec));
+      return res.status(429).json({ error: "rate_limited" });
+    }
+
+    cur.count += 1;
+    return next();
+  };
+}
+
+function rateKeyByIp(req: express.Request) {
+  return `ip:${clientIp(req)}`;
+}
+
+function rateKeyByUserOrIp(req: express.Request) {
+  const userId = (req as any).userId as string | undefined;
+  if (userId) return `u:${userId}`;
+  return rateKeyByIp(req);
 }
 
 function validateName(name: unknown, field: string) {
@@ -441,6 +660,32 @@ function validateInviteCode(code: unknown) {
   if (!v) return "invite_code_required";
   if (!/^[a-z0-9]{6,32}$/.test(v)) return "invite_code_invalid";
   return null;
+}
+
+async function writeAuditLog(entry: {
+  roomId: string;
+  actorId: string;
+  action: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  meta?: any;
+}) {
+  const roomId = String(entry.roomId || "");
+  const actorId = String(entry.actorId || "");
+  const action = String(entry.action || "").trim();
+  if (!roomId || !actorId || !action) return;
+  const targetType = entry.targetType != null ? String(entry.targetType) : null;
+  const targetId = entry.targetId != null ? String(entry.targetId) : null;
+  const meta = entry.meta === undefined ? null : entry.meta;
+  try {
+    await pool.query(
+      `INSERT INTO audit_logs (id, room_id, actor_id, action, target_type, target_id, meta)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [randomUUID(), roomId, actorId, action, targetType, targetId, meta]
+    );
+  } catch (e) {
+    console.error("audit_log_failed", e);
+  }
 }
 
 function pairKey(a: string, b: string) {
@@ -522,15 +767,85 @@ async function assertRoomMember(roomId: string, userId: string, res: any) {
   return true;
 }
 
+async function isFirstRegisteredUser(userId: string) {
+  const r = await pool.query(`SELECT id FROM users ORDER BY created_at ASC LIMIT 1`);
+  if ((r.rowCount ?? 0) === 0) return false;
+  return String(r.rows?.[0]?.id || "") === userId;
+}
+
 function parseDataUrlImage(dataUrl: string): { mime: string; bytes: Buffer } | null {
   // data:image/png;base64,....
   const m = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
   if (!m || !m[1] || !m[2]) return null;
-  const mime = String(m[1]).toLowerCase();
-  if (!mime.startsWith("image/")) return null;
+  const declaredMime = String(m[1]).toLowerCase();
+  if (!declaredMime.startsWith("image/")) return null;
   const b64 = String(m[2]);
   const bytes = Buffer.from(b64, "base64");
-  return { mime, bytes };
+  if (!bytes || bytes.length < 12) return null;
+
+  function detectRasterImageMime(buf: Buffer): "image/png" | "image/jpeg" | "image/gif" | "image/webp" | null {
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (
+      buf.length >= 8 &&
+      buf[0] === 0x89 &&
+      buf[1] === 0x50 &&
+      buf[2] === 0x4e &&
+      buf[3] === 0x47 &&
+      buf[4] === 0x0d &&
+      buf[5] === 0x0a &&
+      buf[6] === 0x1a &&
+      buf[7] === 0x0a
+    ) {
+      return "image/png";
+    }
+
+    // JPEG: FF D8 FF
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+      return "image/jpeg";
+    }
+
+    // GIF: GIF87a / GIF89a
+    if (
+      buf.length >= 6 &&
+      buf[0] === 0x47 &&
+      buf[1] === 0x49 &&
+      buf[2] === 0x46 &&
+      buf[3] === 0x38 &&
+      (buf[4] === 0x37 || buf[4] === 0x39) &&
+      buf[5] === 0x61
+    ) {
+      return "image/gif";
+    }
+
+    // WEBP: "RIFF" .... "WEBP"
+    if (
+      buf.length >= 12 &&
+      buf[0] === 0x52 &&
+      buf[1] === 0x49 &&
+      buf[2] === 0x46 &&
+      buf[3] === 0x46 &&
+      buf[8] === 0x57 &&
+      buf[9] === 0x45 &&
+      buf[10] === 0x42 &&
+      buf[11] === 0x50
+    ) {
+      return "image/webp";
+    }
+
+    return null;
+  }
+
+  const detected = detectRasterImageMime(bytes);
+  if (!detected) return null;
+
+  // Accept common declared aliases but enforce signature match.
+  const normalizedDeclared =
+    declaredMime === "image/jpg" ? "image/jpeg" : declaredMime === "image/pjpeg" ? "image/jpeg" : declaredMime;
+  const allowedDeclared = new Set(["image/png", "image/jpeg", "image/jpg", "image/pjpeg", "image/webp", "image/gif"]);
+  if (!allowedDeclared.has(declaredMime)) return null;
+  if (normalizedDeclared !== detected) return null;
+
+  return { mime: detected, bytes };
 }
 
 // health
@@ -842,7 +1157,11 @@ app.get("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
 });
 
 // send dm message
-app.post("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
+app.post(
+  "/dm/threads/:threadId/messages",
+  requireAuth,
+  rateLimit({ name: "dm_message_create", windowMs: 10_000, max: 15, key: rateKeyByUserOrIp }),
+  async (req, res) => {
   const me = (req as any).userId as string;
   const threadId = String(req.params.threadId || "");
   if (!threadId) return res.status(400).json({ error: "threadId_required" });
@@ -887,7 +1206,8 @@ app.post("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
   wsBroadcastDm(threadId, { type: "dm_message_created", threadId, message: payload });
 
   res.status(201).json(payload);
-});
+  }
+);
 
 // user avatar (stored in DB)
 app.get("/users/:userId/avatar", async (req, res) => {
@@ -942,7 +1262,10 @@ app.post("/users/:userId/avatar", requireAuth, async (req, res) => {
 });
 
 // --- Passkey (WebAuthn) auth ---
-app.post("/auth/register/options", async (req, res) => {
+app.post(
+  "/auth/register/options",
+  rateLimit({ name: "auth_register_options", windowMs: 60_000, max: 10, key: rateKeyByIp }),
+  async (req, res) => {
   const userIdErr = validateUserId(req.body?.userId);
   if (userIdErr) return res.status(400).json({ error: userIdErr });
   const nameErr = validateDisplayName(req.body?.displayName);
@@ -979,9 +1302,13 @@ app.post("/auth/register/options", async (req, res) => {
 
   await pool.query(`UPDATE users SET current_challenge=$2 WHERE id=$1`, [userId, options.challenge]);
   res.json(options);
-});
+  }
+);
 
-app.post("/auth/register/verify", async (req, res) => {
+app.post(
+  "/auth/register/verify",
+  rateLimit({ name: "auth_register_verify", windowMs: 60_000, max: 10, key: rateKeyByIp }),
+  async (req, res) => {
   const userIdErr = validateUserId(req.body?.userId);
   if (userIdErr) return res.status(400).json({ error: userIdErr });
   if (!req.body?.response) return res.status(400).json({ error: "response_required" });
@@ -1029,9 +1356,13 @@ app.post("/auth/register/verify", async (req, res) => {
 
   const token = signAuthToken(userId);
   res.json({ ok: true, userId, displayName: user.rows[0].display_name, token });
-});
+  }
+);
 
-app.post("/auth/login/options", async (req, res) => {
+app.post(
+  "/auth/login/options",
+  rateLimit({ name: "auth_login_options", windowMs: 60_000, max: 20, key: rateKeyByIp }),
+  async (req, res) => {
   const userIdErr = validateUserId(req.body?.userId);
   if (userIdErr) return res.status(400).json({ error: userIdErr });
 
@@ -1058,9 +1389,13 @@ app.post("/auth/login/options", async (req, res) => {
 
   await pool.query(`UPDATE users SET current_challenge=$2 WHERE id=$1`, [userId, options.challenge]);
   res.json(options);
-});
+  }
+);
 
-app.post("/auth/login/verify", async (req, res) => {
+app.post(
+  "/auth/login/verify",
+  rateLimit({ name: "auth_login_verify", windowMs: 60_000, max: 20, key: rateKeyByIp }),
+  async (req, res) => {
   const userIdErr = validateUserId(req.body?.userId);
   if (userIdErr) return res.status(400).json({ error: userIdErr });
   if (!req.body?.response) return res.status(400).json({ error: "response_required" });
@@ -1120,7 +1455,8 @@ app.post("/auth/login/verify", async (req, res) => {
 
   const token = signAuthToken(userId);
   res.json({ ok: true, userId, displayName: user.rows[0].display_name, token });
-});
+  }
+);
 
 // update user display name (server-side)
 app.post("/users/:userId/displayName", requireAuth, async (req, res) => {
@@ -1170,6 +1506,9 @@ app.get("/rooms", requireAuth, async (req, res) => {
 // create room
 app.post("/rooms", requireAuth, async (req, res) => {
   const me = (req as any).userId as string;
+  if (!(await isFirstRegisteredUser(me))) {
+    return res.status(403).json({ error: "only_first_user_can_create_rooms" });
+  }
   const nameErr = validateName(req.body?.name, "name");
   if (nameErr) return res.status(400).json({ error: nameErr });
 
@@ -1203,6 +1542,7 @@ app.post("/rooms", requireAuth, async (req, res) => {
     throw e;
   }
 
+  void writeAuditLog({ roomId: id, actorId: me, action: "room_create", targetType: "room", targetId: id, meta: { name } });
   res.status(201).json({ id, name, owner_id: me });
 });
 
@@ -1212,6 +1552,10 @@ app.delete("/rooms/:roomId", requireAuth, async (req, res) => {
   const roomId = String(req.params.roomId || "");
   if (!roomId) return res.status(400).json({ error: "roomId_required" });
   if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const r = await pool.query(`SELECT name FROM rooms WHERE id=$1`, [roomId]);
+  const roomName = r.rows?.[0]?.name ? String(r.rows[0].name) : null;
+  void writeAuditLog({ roomId, actorId: me, action: "room_delete", targetType: "room", targetId: roomId, meta: { name: roomName } });
 
   await pool.query(`DELETE FROM rooms WHERE id=$1`, [roomId]);
   res.json({ ok: true });
@@ -1308,6 +1652,15 @@ app.post("/rooms/:roomId/bans", requireAuth, async (req, res) => {
     [randomUUID(), roomId, target, me, reason || null]
   );
 
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "room_ban",
+    targetType: "user",
+    targetId: target,
+    meta: { reason: reason || null },
+  });
+
   await wsBroadcastRoom(roomId, { type: "room_ban_changed", roomId, userId: target, banned: true });
   await wsKickUserFromRoom(target, roomId);
   res.json({ ok: true });
@@ -1324,6 +1677,15 @@ app.delete("/rooms/:roomId/bans/:userId", requireAuth, async (req, res) => {
   const target = normalizeUserId(String(req.params.userId));
 
   await pool.query(`DELETE FROM room_bans WHERE room_id=$1 AND user_id=$2`, [roomId, target]);
+
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "room_unban",
+    targetType: "user",
+    targetId: target,
+  });
+
   await wsBroadcastRoom(roomId, { type: "room_ban_changed", roomId, userId: target, banned: false });
   wsBroadcastUserAll(target, { type: "room_unbanned", roomId });
   res.json({ ok: true });
@@ -1359,6 +1721,14 @@ app.post("/rooms/:roomId/invites", requireAuth, async (req, res) => {
   }
 
   if (!code) return res.status(500).json({ error: "invite_create_failed" });
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "invite_create",
+    targetType: "invite",
+    targetId: code,
+    meta: { maxUses: 10, expiresInDays: 7 },
+  });
   res.status(201).json({ code, roomId });
 });
 
@@ -1406,11 +1776,22 @@ app.delete("/rooms/:roomId/invites/:code", requireAuth, async (req, res) => {
 
   const del = await pool.query(`DELETE FROM room_invites WHERE code=$1 AND room_id=$2`, [code, roomId]);
   if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "invite_not_found" });
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "invite_delete",
+    targetType: "invite",
+    targetId: code,
+  });
   res.json({ ok: true });
 });
 
 // join room by invite code
-app.post("/invites/join", requireAuth, async (req, res) => {
+app.post(
+  "/invites/join",
+  requireAuth,
+  rateLimit({ name: "invites_join", windowMs: 60_000, max: 30, key: rateKeyByUserOrIp }),
+  async (req, res) => {
   const me = (req as any).userId as string;
   const codeErr = validateInviteCode(req.body?.code);
   if (codeErr) return res.status(400).json({ error: codeErr });
@@ -1459,12 +1840,21 @@ app.post("/invites/join", requireAuth, async (req, res) => {
 
     await pool.query("COMMIT");
     await wsBroadcastRoom(roomId, { type: "room_member_changed", roomId, userId: me, joined: true });
+    void writeAuditLog({
+      roomId,
+      actorId: me,
+      action: "room_join",
+      targetType: "user",
+      targetId: me,
+      meta: { inviteCode: code },
+    });
     res.json({ ok: true, roomId, roomName });
   } catch (e) {
     await pool.query("ROLLBACK");
     throw e;
   }
-});
+  }
+);
 
 // room members
 app.get("/rooms/:roomId/members", requireAuth, async (req, res) => {
@@ -1507,6 +1897,50 @@ app.get("/rooms/:roomId/members", requireAuth, async (req, res) => {
   );
 });
 
+// room audit logs (owner only)
+app.get("/rooms/:roomId/audit", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const limitRaw = req.query.limit;
+  const limit = Math.min(200, Math.max(1, Number(limitRaw ?? 50) || 50));
+
+  const beforeRaw = typeof req.query.before === "string" ? req.query.before : "";
+  let before: Date | null = null;
+  if (beforeRaw) {
+    const d = new Date(beforeRaw);
+    if (!Number.isNaN(d.getTime())) before = d;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT l.id, l.action, l.target_type, l.target_id, l.meta, l.created_at,
+            l.actor_id, u.display_name AS actor_name
+     FROM audit_logs l
+     JOIN users u ON u.id = l.actor_id
+     WHERE l.room_id=$1
+       AND ($2::timestamptz IS NULL OR l.created_at < $2)
+     ORDER BY l.created_at DESC
+     LIMIT $3`,
+    [roomId, before, limit]
+  );
+
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      roomId,
+      action: r.action,
+      actorId: r.actor_id,
+      actorDisplayName: r.actor_name,
+      targetType: r.target_type ?? null,
+      targetId: r.target_id ?? null,
+      meta: r.meta ?? null,
+      created_at: r.created_at,
+    }))
+  );
+});
+
 app.delete("/rooms/:roomId/members/me", requireAuth, async (req, res) => {
   const me = (req as any).userId as string;
   const roomId = String(req.params.roomId || "");
@@ -1522,6 +1956,7 @@ app.delete("/rooms/:roomId/members/me", requireAuth, async (req, res) => {
   if (ownerId === me) return res.status(400).json({ error: "owner_cannot_leave" });
 
   await pool.query(`DELETE FROM room_members WHERE room_id=$1 AND user_id=$2`, [roomId, me]);
+  void writeAuditLog({ roomId, actorId: me, action: "room_leave", targetType: "user", targetId: me });
   await wsBroadcastRoom(roomId, { type: "room_member_changed", roomId, userId: me, joined: false });
   await wsRemoveUserFromRoom(me, roomId, "room_left");
   res.json({ ok: true });
@@ -1545,6 +1980,7 @@ app.delete("/rooms/:roomId/members/:userId", requireAuth, async (req, res) => {
   const del = await pool.query(`DELETE FROM room_members WHERE room_id=$1 AND user_id=$2`, [roomId, target]);
   if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "not_member" });
 
+  void writeAuditLog({ roomId, actorId: me, action: "room_kick", targetType: "user", targetId: target });
   await wsBroadcastRoom(roomId, { type: "room_member_changed", roomId, userId: target, joined: false });
   await wsRemoveUserFromRoom(target, roomId, "room_kicked");
   res.json({ ok: true });
@@ -1697,7 +2133,11 @@ app.get("/channels/:channelId/messages", requireAuth, async (req, res) => {
 });
 
 // create message
-app.post("/channels/:channelId/messages", requireAuth, async (req, res) => {
+app.post(
+  "/channels/:channelId/messages",
+  requireAuth,
+  rateLimit({ name: "message_create", windowMs: 10_000, max: 20, key: rateKeyByUserOrIp }),
+  async (req, res) => {
   const channelId = String(req.params.channelId || "");
   if (!channelId) return res.status(400).json({ error: "channelId_required" });
 
@@ -1812,12 +2252,16 @@ app.post("/channels/:channelId/messages", requireAuth, async (req, res) => {
     await pool.query("ROLLBACK");
     throw e;
   }
-});
+  }
+);
 
 // get attachment binary
-app.get("/attachments/:attachmentId", async (req, res) => {
-  const me = authedUserIdWithQueryToken(req);
-  if (!me) return res.status(401).json({ error: "auth_required" });
+app.get(
+  "/attachments/:attachmentId",
+  requireAuth,
+  rateLimit({ name: "attachment_get", windowMs: 60_000, max: 300, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+  const me = (req as any).userId as string;
   const attachmentId = req.params.attachmentId;
   const a = await pool.query(
     `SELECT a.id, a.mime_type, a.data, c.room_id
@@ -1831,12 +2275,19 @@ app.get("/attachments/:attachmentId", async (req, res) => {
   const roomId = String(a.rows?.[0]?.room_id || "");
   if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
   if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+  res.setHeader("cache-control", "private, no-store");
+  res.setHeader("content-disposition", "inline");
   res.setHeader("content-type", a.rows[0].mime_type);
   res.send(a.rows[0].data);
-});
+  }
+);
 
 // toggle reaction
-app.post("/messages/:messageId/reactions/toggle", requireAuth, async (req, res) => {
+app.post(
+  "/messages/:messageId/reactions/toggle",
+  requireAuth,
+  rateLimit({ name: "reaction_toggle", windowMs: 10_000, max: 80, key: rateKeyByUserOrIp }),
+  async (req, res) => {
   const messageId = req.params.messageId;
 
   const author = (req as any).userId as string;
@@ -1898,10 +2349,15 @@ app.post("/messages/:messageId/reactions/toggle", requireAuth, async (req, res) 
   }
 
   res.json({ messageId, reactions: Object.values(byEmoji) });
-});
+  }
+);
 
 // edit message (author or room owner)
-app.patch("/messages/:messageId", requireAuth, async (req, res) => {
+app.patch(
+  "/messages/:messageId",
+  requireAuth,
+  rateLimit({ name: "message_edit", windowMs: 60_000, max: 60, key: rateKeyByUserOrIp }),
+  async (req, res) => {
   const me = (req as any).userId as string;
   const messageId = String(req.params.messageId || "");
   if (!messageId) return res.status(400).json({ error: "messageId_required" });
@@ -1940,12 +2396,28 @@ app.patch("/messages/:messageId", requireAuth, async (req, res) => {
   );
   const editedAt = upd.rows?.[0]?.edited_at ?? null;
 
+  if (roomId) {
+    void writeAuditLog({
+      roomId,
+      actorId: me,
+      action: "message_edit",
+      targetType: "message",
+      targetId: messageId,
+      meta: { channelId, authorId, byOwner: !!(ownerId && ownerId === me && me !== authorId) },
+    });
+  }
+
   wsBroadcastChannel(channelId, { type: "channel_message_updated", channelId, messageId, content, edited_at: editedAt });
   res.json({ ok: true, messageId, content, edited_at: editedAt });
-});
+  }
+);
 
 // delete message (author or room owner)
-app.delete("/messages/:messageId", requireAuth, async (req, res) => {
+app.delete(
+  "/messages/:messageId",
+  requireAuth,
+  rateLimit({ name: "message_delete", windowMs: 60_000, max: 60, key: rateKeyByUserOrIp }),
+  async (req, res) => {
   const me = (req as any).userId as string;
   const messageId = String(req.params.messageId || "");
   if (!messageId) return res.status(400).json({ error: "messageId_required" });
@@ -1974,11 +2446,22 @@ app.delete("/messages/:messageId", requireAuth, async (req, res) => {
   if (!canDelete) return res.status(403).json({ error: "forbidden" });
 
   await pool.query(`DELETE FROM messages WHERE id=$1`, [messageId]);
+  if (roomId) {
+    void writeAuditLog({
+      roomId,
+      actorId: me,
+      action: "message_delete",
+      targetType: "message",
+      targetId: messageId,
+      meta: { channelId, authorId, byOwner: !!(ownerId && ownerId === me && me !== authorId) },
+    });
+  }
   if (roomId && channelId) {
     wsBroadcastChannel(channelId, { type: "channel_message_deleted", channelId, messageId });
   }
   res.json({ ok: true });
-});
+  }
+);
 
 // create category
 app.post("/rooms/:roomId/categories", requireAuth, async (req, res) => {
@@ -1999,6 +2482,15 @@ app.post("/rooms/:roomId/categories", requireAuth, async (req, res) => {
     [id, roomId, name, position]
   );
 
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "category_create",
+    targetType: "category",
+    targetId: id,
+    meta: { name, position },
+  });
+
   res.status(201).json({ id, room_id: roomId, name, position });
 });
 
@@ -2011,11 +2503,9 @@ app.delete("/rooms/:roomId/categories/:categoryId", requireAuth, async (req, res
 
   if (!(await assertRoomOwner(roomId, me, res))) return;
 
-  const cat = await pool.query(
-    `SELECT id FROM categories WHERE id=$1 AND room_id=$2`,
-    [categoryId, roomId]
-  );
+  const cat = await pool.query(`SELECT id, name FROM categories WHERE id=$1 AND room_id=$2`, [categoryId, roomId]);
   if (cat.rowCount === 0) return res.status(404).json({ error: "category_not_found" });
+  const catName = cat.rows?.[0]?.name ? String(cat.rows[0].name) : null;
 
   await pool.query("BEGIN");
   try {
@@ -2033,6 +2523,15 @@ app.delete("/rooms/:roomId/categories/:categoryId", requireAuth, async (req, res
     await pool.query("ROLLBACK");
     throw e;
   }
+
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "category_delete",
+    targetType: "category",
+    targetId: String(categoryId),
+    meta: { name: catName },
+  });
 
   res.json({ ok: true });
 });
@@ -2069,6 +2568,15 @@ app.post("/rooms/:roomId/channels", requireAuth, async (req, res) => {
     [id, roomId, categoryId ?? null, name, position]
   );
 
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "channel_create",
+    targetType: "channel",
+    targetId: id,
+    meta: { name, position, categoryId: categoryId ?? null },
+  });
+
   res.status(201).json({ id, room_id: roomId, category_id: categoryId ?? null, name, position });
 });
 
@@ -2081,13 +2589,19 @@ app.delete("/rooms/:roomId/channels/:channelId", requireAuth, async (req, res) =
 
   if (!(await assertRoomOwner(roomId, me, res))) return;
 
-  const ch = await pool.query(
-    `SELECT id FROM channels WHERE id=$1 AND room_id=$2`,
-    [channelId, roomId]
-  );
+  const ch = await pool.query(`SELECT id, name FROM channels WHERE id=$1 AND room_id=$2`, [channelId, roomId]);
   if (ch.rowCount === 0) return res.status(404).json({ error: "channel_not_found" });
+  const chName = ch.rows?.[0]?.name ? String(ch.rows[0].name) : null;
 
   await pool.query(`DELETE FROM channels WHERE id=$1 AND room_id=$2`, [channelId, roomId]);
+  void writeAuditLog({
+    roomId,
+    actorId: me,
+    action: "channel_delete",
+    targetType: "channel",
+    targetId: String(channelId),
+    meta: { name: chName },
+  });
   res.json({ ok: true });
 });
 

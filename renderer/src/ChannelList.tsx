@@ -47,7 +47,7 @@ export function ChannelList({
       padding: "16px 0",
       display: "flex",
       flexDirection: "column",
-      height: "100dvh",
+      height: "var(--app-height)",
       minHeight: "100vh",
       overflow: "hidden"
     }}>

@@ -432,6 +432,34 @@ export default function App() {
     return () => window.removeEventListener("resize", update);
   }, []);
 
+  useEffect(() => {
+    let raf = 0;
+    function apply() {
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        const vv = (window as any).visualViewport as VisualViewport | undefined;
+        const h = Math.round((vv?.height ?? window.innerHeight) || window.innerHeight);
+        document.documentElement.style.setProperty("--app-height", `${h}px`);
+      });
+    }
+
+    apply();
+    window.addEventListener("resize", apply);
+    window.addEventListener("orientationchange", apply);
+    const vv = (window as any).visualViewport as VisualViewport | undefined;
+    vv?.addEventListener("resize", apply);
+    vv?.addEventListener("scroll", apply);
+
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", apply);
+      window.removeEventListener("orientationchange", apply);
+      vv?.removeEventListener("resize", apply);
+      vv?.removeEventListener("scroll", apply);
+    };
+  }, []);
+
   const dmReactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
 
   function openDmSearch() {
@@ -1841,7 +1869,7 @@ export default function App() {
     <div className={`app ${authed ? "authed" : ""}`}>
       {authed ? (
         // Discord風レイアウト
-        <div style={{ display: "flex", height: "100dvh", minHeight: "100vh", background: "#36393f", overflowX: "hidden" }}>
+        <div style={{ display: "flex", height: "var(--app-height)", minHeight: "100vh", background: "#36393f", overflowX: "hidden" }}>
           {!isNarrow && rooms && (
             <ServerList
               rooms={rooms}
@@ -1859,7 +1887,7 @@ export default function App() {
                 width: 260,
                 background: "#2f3136",
                 borderRight: "1px solid #202225",
-                height: "100dvh",
+                height: "var(--app-height)",
                 minHeight: "100vh",
                 display: "flex",
                 flexDirection: "column",
@@ -2201,7 +2229,7 @@ export default function App() {
                 color: "#dcddde",
                 display: "flex",
                 flexDirection: "column",
-                height: "100dvh",
+                height: "var(--app-height)",
                 minHeight: "100vh",
               }}
             >
@@ -2581,7 +2609,7 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div style={{ display: "flex", flex: 1, height: "100dvh", minHeight: "100vh" }}>
+            <div style={{ display: "flex", flex: 1, height: "var(--app-height)", minHeight: "100vh" }}>
               <MessageArea
                 roomId={tree?.room?.id ?? null}
                 selectedChannelId={selectedChannelId}

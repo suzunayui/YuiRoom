@@ -798,7 +798,7 @@ export function MessageArea({
       color: "#dcddde",
       display: "flex",
       flexDirection: "column",
-      height: "100dvh",
+      height: "var(--app-height)",
       minHeight: "100vh",
     }}>
       {/* チャンネルヘッダー */}

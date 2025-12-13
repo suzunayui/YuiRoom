@@ -1983,6 +1983,7 @@ export default function App() {
                 }
                 currentUserId={currentUserId}
                 canModerate={!!(tree?.room.owner_id && currentUserId && tree.room.owner_id === currentUserId)}
+                mentionCandidates={memberPane.map((m) => ({ userId: m.userId, displayName: m.displayName }))}
               />
               <MemberPane members={memberPane} loading={memberPaneLoading} error={memberPaneError} />
             </div>

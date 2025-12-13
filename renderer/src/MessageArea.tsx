@@ -10,6 +10,7 @@ type Props = {
   onAuthorClick?: (author: { userId: string; displayName: string }) => void;
   currentUserId?: string | null;
   canModerate?: boolean;
+  mentionCandidates?: Array<{ userId: string; displayName: string }>;
 };
 
 function formatTime(iso: string) {
@@ -117,7 +118,14 @@ function AttachmentImage({
   );
 }
 
-export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorClick, currentUserId, canModerate }: Props) {
+export function MessageArea({
+  selectedChannelId,
+  selectedChannelName,
+  onAuthorClick,
+  currentUserId,
+  canModerate,
+  mentionCandidates,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -135,11 +143,16 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
   const [editFor, setEditFor] = useState<null | { id: string; text: string }>(null);
   const [editing, setEditing] = useState(false);
   const [imageModalSrc, setImageModalSrc] = useState<string | null>(null);
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionIndex, setMentionIndex] = useState(0);
 
   const reactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const mentionRangeRef = useRef<{ start: number; end: number } | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const lastChannelIdRef = useRef<string | null>(null);
 
@@ -167,6 +180,10 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
           setDeleteModalFor(null);
           setEditFor(null);
           setImageModalSrc(null);
+          setMentionOpen(false);
+          setMentionQuery("");
+          setMentionIndex(0);
+          mentionRangeRef.current = null;
           shouldStickToBottomRef.current = true;
         }
       } catch (e: any) {
@@ -244,6 +261,104 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
     shouldStickToBottomRef.current = false;
   }, [messages.length, selectedChannelId]);
 
+  const mentionList = (() => {
+    if (!mentionOpen) return [];
+    const base = (mentionCandidates ?? [])
+      .filter((c) => !!c.userId)
+      .filter((c) => (!currentUserId ? true : c.userId !== currentUserId))
+      .map((c) => ({ userId: c.userId, displayName: c.displayName || c.userId }));
+
+    const q = mentionQuery.trim().toLowerCase();
+    const list = q
+      ? base.filter((c) => {
+          const uid = c.userId.toLowerCase();
+          const dn = c.displayName.toLowerCase();
+          return uid.includes(q) || dn.includes(q);
+        })
+      : base;
+
+    function score(v: { userId: string; displayName: string }) {
+      if (!q) return 0;
+      const uid = v.userId.toLowerCase();
+      const dn = v.displayName.toLowerCase();
+      if (uid.startsWith(q) || dn.startsWith(q)) return 0;
+      return 1;
+    }
+
+    list.sort((a, b) => score(a) - score(b) || a.displayName.localeCompare(b.displayName));
+    return list.slice(0, 8);
+  })();
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    if (mentionList.length === 0) {
+      setMentionOpen(false);
+      mentionRangeRef.current = null;
+      return;
+    }
+    if (mentionIndex >= mentionList.length) setMentionIndex(0);
+  }, [mentionOpen, mentionList.length, mentionIndex]);
+
+  function updateMentionFromInput(value: string, cursor: number) {
+    if (!mentionCandidates || mentionCandidates.length === 0) {
+      setMentionOpen(false);
+      mentionRangeRef.current = null;
+      return;
+    }
+
+    const before = value.slice(0, cursor);
+    const at = before.lastIndexOf("@");
+    if (at < 0) {
+      setMentionOpen(false);
+      mentionRangeRef.current = null;
+      return;
+    }
+
+    const prev = at > 0 ? before[at - 1] : "";
+    if (prev && /[0-9A-Za-z_]/.test(prev)) {
+      setMentionOpen(false);
+      mentionRangeRef.current = null;
+      return;
+    }
+
+    const query = before.slice(at + 1);
+    if (query.includes(" ") || query.includes("\t")) {
+      setMentionOpen(false);
+      mentionRangeRef.current = null;
+      return;
+    }
+
+    setMentionQuery(query);
+    setMentionOpen(true);
+    setMentionIndex(0);
+    mentionRangeRef.current = { start: at, end: cursor };
+  }
+
+  function applyMention(userId: string) {
+    const range = mentionRangeRef.current;
+    const input = textInputRef.current;
+    if (!range || !input) return;
+
+    const insert = `@${userId} `;
+    const next = text.slice(0, range.start) + insert + text.slice(range.end);
+    const caret = range.start + insert.length;
+
+    setText(next);
+    setMentionOpen(false);
+    setMentionQuery("");
+    setMentionIndex(0);
+    mentionRangeRef.current = null;
+
+    requestAnimationFrame(() => {
+      try {
+        input.focus();
+        input.setSelectionRange(caret, caret);
+      } catch {
+        // ignore
+      }
+    });
+  }
+
   async function send() {
     if (!selectedChannelId) return;
     const content = text.trim();
@@ -263,6 +378,10 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
       setText("");
       setReplyTo(null);
       setPendingImage(null);
+      setMentionOpen(false);
+      setMentionQuery("");
+      setMentionIndex(0);
+      mentionRangeRef.current = null;
     } catch (e: any) {
       setError(e?.message ?? "failed");
     } finally {
@@ -939,26 +1058,139 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
             }}
           />
 
-          <input
-            placeholder={`#${selectedChannelName || "channel"} にメッセージを送信（画像は貼り付け/添付OK）`}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onPaste={handlePaste}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") send();
-            }}
-            disabled={!selectedChannelId || sending}
-            style={{
-              width: "100%",
-              padding: "12px",
-              borderRadius: 8,
-              border: "none",
-              background: "#40444b",
-              color: "#dcddde",
-              fontSize: 14,
-              opacity: !selectedChannelId ? 0.6 : 1
-            }}
-          />
+          <div style={{ position: "relative", width: "100%" }}>
+            {mentionOpen && mentionList.length > 0 && (
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: "calc(100% + 8px)",
+                  background: "#2f3136",
+                  border: "1px solid #202225",
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  boxShadow: "0 12px 40px rgba(0,0,0,0.45)",
+                  maxHeight: 240,
+                  overflowY: "auto",
+                  zIndex: 5,
+                }}
+              >
+                {mentionList.map((m, idx) => {
+                  const active = idx === mentionIndex;
+                  return (
+                    <button
+                      key={m.userId}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyMention(m.userId);
+                      }}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "10px 12px",
+                        border: "none",
+                        background: active ? "#40444b" : "transparent",
+                        color: "#dcddde",
+                        cursor: "pointer",
+                        display: "grid",
+                        gap: 2,
+                      }}
+                      title={`@${m.userId}`}
+                    >
+                      <div
+                        style={{
+                          fontWeight: 900,
+                          fontSize: 13,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {m.displayName}
+                      </div>
+                      <div
+                        style={{
+                          color: "#8e9297",
+                          fontSize: 12,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        @{m.userId}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <input
+              ref={textInputRef}
+              placeholder={`#${selectedChannelName || "channel"} にメッセージを送信（画像は貼り付け/添付OK）`}
+              value={text}
+              onChange={(e) => {
+                const v = e.target.value;
+                setText(v);
+                const cursor = e.currentTarget.selectionStart ?? v.length;
+                updateMentionFromInput(v, cursor);
+              }}
+              onClick={(e) => {
+                const cursor = e.currentTarget.selectionStart ?? text.length;
+                updateMentionFromInput(text, cursor);
+              }}
+              onKeyUp={(e) => {
+                const cursor = e.currentTarget.selectionStart ?? text.length;
+                updateMentionFromInput(text, cursor);
+              }}
+              onBlur={() => {
+                setMentionOpen(false);
+                mentionRangeRef.current = null;
+              }}
+              onPaste={handlePaste}
+              onKeyDown={(e) => {
+                if (mentionOpen && mentionList.length > 0) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setMentionIndex((i) => Math.min(i + 1, mentionList.length - 1));
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setMentionIndex((i) => Math.max(i - 1, 0));
+                    return;
+                  }
+                  if (e.key === "Enter" || e.key === "Tab") {
+                    e.preventDefault();
+                    const picked = mentionList[Math.min(mentionIndex, mentionList.length - 1)];
+                    if (picked) applyMention(picked.userId);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMentionOpen(false);
+                    mentionRangeRef.current = null;
+                    return;
+                  }
+                }
+
+                if (e.key === "Enter") send();
+              }}
+              disabled={!selectedChannelId || sending}
+              style={{
+                width: "100%",
+                padding: "12px",
+                borderRadius: 8,
+                border: "none",
+                background: "#40444b",
+                color: "#dcddde",
+                fontSize: 14,
+                opacity: !selectedChannelId ? 0.6 : 1,
+              }}
+            />
+          </div>
 
           <button
             onClick={() => send()}

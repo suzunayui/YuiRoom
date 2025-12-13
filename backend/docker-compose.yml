@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:18.1
+    container_name: yuiroom-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yuiroom
+      POSTGRES_PASSWORD: yuiroom_dev_pw
+      POSTGRES_DB: yuiroom
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+volumes:
+  pgdata:

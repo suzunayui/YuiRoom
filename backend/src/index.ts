@@ -1,0 +1,2108 @@
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+import { initDb, pool } from "./db.js";
+import { randomUUID, createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createServer } from "node:http";
+import type { IncomingMessage } from "node:http";
+import { WebSocketServer, WebSocket } from "ws";
+import type { RawData } from "ws";
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+} from "@simplewebauthn/server";
+
+type WsClient = {
+  ws: WebSocket;
+  userId: string;
+  channels: Set<string>;
+  dmThreads: Set<string>;
+  home: boolean;
+};
+
+const wsClients = new Set<WsClient>();
+const wsByChannel = new Map<string, Set<WsClient>>();
+const wsByDmThread = new Map<string, Set<WsClient>>();
+const wsByUserId = new Map<string, Set<WsClient>>();
+
+function wsSubscribe(map: Map<string, Set<WsClient>>, key: string, c: WsClient) {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set();
+    map.set(key, set);
+  }
+  set.add(c);
+}
+
+function wsUnsubscribe(map: Map<string, Set<WsClient>>, key: string, c: WsClient) {
+  const set = map.get(key);
+  if (!set) return;
+  set.delete(c);
+  if (set.size === 0) map.delete(key);
+}
+
+function wsSendSafe(c: WsClient, data: unknown) {
+  try {
+    if (c.ws.readyState === 1) c.ws.send(JSON.stringify(data));
+  } catch {
+    // ignore
+  }
+}
+
+function wsBroadcastChannel(channelId: string, data: unknown) {
+  const set = wsByChannel.get(channelId);
+  if (!set) return;
+  for (const c of set) wsSendSafe(c, data);
+}
+
+function wsBroadcastDm(threadId: string, data: unknown) {
+  const set = wsByDmThread.get(threadId);
+  if (!set) return;
+  for (const c of set) wsSendSafe(c, data);
+}
+
+function wsBroadcastUser(userId: string, data: unknown) {
+  const set = wsByUserId.get(userId);
+  if (!set) return;
+  for (const c of set) {
+    if (!c.home) continue;
+    wsSendSafe(c, data);
+  }
+}
+
+function wsBroadcastUserAll(userId: string, data: unknown) {
+  const set = wsByUserId.get(userId);
+  if (!set) return;
+  for (const c of set) wsSendSafe(c, data);
+}
+
+function isUserOnline(userId: string) {
+  const set = wsByUserId.get(userId);
+  return !!set && set.size > 0;
+}
+
+async function wsKickUserFromRoom(userId: string, roomId: string) {
+  const set = wsByUserId.get(userId);
+  if (!set || set.size === 0) return;
+
+  const { rows } = await pool.query(`SELECT id FROM channels WHERE room_id=$1`, [roomId]);
+  const channelIds = new Set<string>(rows.map((r: any) => String(r.id)));
+
+  for (const c of set) {
+    for (const channelId of channelIds) {
+      if (!c.channels.has(channelId)) continue;
+      c.channels.delete(channelId);
+      wsUnsubscribe(wsByChannel, channelId, c);
+    }
+  }
+
+  wsBroadcastUserAll(userId, { type: "room_banned", roomId });
+}
+
+async function wsBroadcastRoom(roomId: string, data: unknown) {
+  const { rows } = await pool.query(`SELECT id FROM channels WHERE room_id=$1`, [roomId]);
+  for (const r of rows) {
+    const channelId = String((r as any).id ?? "");
+    if (!channelId) continue;
+    wsBroadcastChannel(channelId, data);
+  }
+}
+
+async function wsBroadcastRoomsForUser(userId: string, data: unknown) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT room_id
+     FROM (
+       SELECT room_id FROM room_members WHERE user_id=$1
+       UNION ALL
+       SELECT id AS room_id FROM rooms WHERE owner_id=$1
+     ) t`,
+    [userId]
+  );
+  for (const r of rows) {
+    const roomId = String((r as any).room_id ?? "");
+    if (!roomId) continue;
+    await wsBroadcastRoom(roomId, { ...(data as any), roomId });
+  }
+}
+
+async function wsRemoveUserFromRoom(userId: string, roomId: string, reasonType: "room_left" | "room_kicked") {
+  const set = wsByUserId.get(userId);
+  if (!set || set.size === 0) return;
+
+  const { rows } = await pool.query(`SELECT id FROM channels WHERE room_id=$1`, [roomId]);
+  const channelIds = new Set<string>(rows.map((r: any) => String(r.id)));
+
+  for (const c of set) {
+    for (const channelId of channelIds) {
+      if (!c.channels.has(channelId)) continue;
+      c.channels.delete(channelId);
+      wsUnsubscribe(wsByChannel, channelId, c);
+    }
+  }
+
+  wsBroadcastUserAll(userId, { type: reasonType, roomId });
+}
+
+function setupWebSocket(server: ReturnType<typeof createServer>) {
+  const wss = new WebSocketServer({ server, path: "/ws" });
+
+  wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
+    try {
+      const url = new URL(req.url || "/ws", "http://localhost");
+      const token = url.searchParams.get("token") || "";
+      const userId = token ? verifyAuthToken(token) : null;
+      if (!userId) {
+        ws.close(1008, "unauthorized");
+        return;
+      }
+
+      const client: WsClient = {
+        ws,
+        userId,
+        channels: new Set(),
+        dmThreads: new Set(),
+        home: false,
+      };
+      const wasOnline = isUserOnline(userId);
+      wsClients.add(client);
+      wsSubscribe(wsByUserId, userId, client);
+      if (!wasOnline) {
+        void wsBroadcastRoomsForUser(userId, { type: "room_presence", userId, online: true });
+      }
+
+      ws.on("message", async (raw: RawData) => {
+        let msg: any;
+        try {
+          msg = JSON.parse(String(raw || ""));
+        } catch {
+          return;
+        }
+        if (!msg || typeof msg !== "object") return;
+
+        // subscribe / unsubscribe
+        if (msg.type === "subscribe" && typeof msg.channelId === "string") {
+          const channelId = msg.channelId;
+
+          const ch = await pool.query(`SELECT room_id FROM channels WHERE id=$1`, [channelId]);
+          if ((ch.rowCount ?? 0) === 0) {
+            wsSendSafe(client, { type: "error", error: "channel_not_found", channelId });
+            return;
+          }
+          const roomId = String(ch.rows?.[0]?.room_id || "");
+          if (roomId) {
+            const banned = await pool.query(
+              `SELECT 1 FROM room_bans WHERE room_id=$1 AND user_id=$2`,
+              [roomId, client.userId]
+            );
+            if ((banned.rowCount ?? 0) > 0) {
+              wsSendSafe(client, { type: "error", error: "room_banned", channelId });
+              return;
+            }
+
+            const memberOk = await isRoomMemberOrPublic(roomId, client.userId);
+            if (!memberOk) {
+              wsSendSafe(client, { type: "error", error: "not_member", channelId });
+              return;
+            }
+          }
+
+          client.channels.add(channelId);
+          wsSubscribe(wsByChannel, channelId, client);
+          wsSendSafe(client, { type: "subscribed", channelId });
+          return;
+        }
+        if (msg.type === "unsubscribe" && typeof msg.channelId === "string") {
+          const channelId = msg.channelId;
+          client.channels.delete(channelId);
+          wsUnsubscribe(wsByChannel, channelId, client);
+          return;
+        }
+        if (msg.type === "subscribe_dm" && typeof msg.threadId === "string") {
+          const threadId = msg.threadId;
+          // membership check
+          const member = await pool.query(
+            `SELECT 1 FROM dm_members WHERE thread_id=$1 AND user_id=$2`,
+            [threadId, client.userId]
+          );
+          if ((member.rowCount ?? 0) === 0) {
+            wsSendSafe(client, { type: "error", error: "forbidden", threadId });
+            return;
+          }
+
+          const otherQ = await pool.query(
+            `SELECT user_id FROM dm_members WHERE thread_id=$1 AND user_id <> $2 LIMIT 1`,
+            [threadId, client.userId]
+          );
+          const other = String(otherQ.rows?.[0]?.user_id || "");
+          if (!other) {
+            wsSendSafe(client, { type: "error", error: "forbidden", threadId });
+            return;
+          }
+          if (!(await areFriends(client.userId, other))) {
+            wsSendSafe(client, { type: "error", error: "not_friends", threadId });
+            return;
+          }
+
+          client.dmThreads.add(threadId);
+          wsSubscribe(wsByDmThread, threadId, client);
+          wsSendSafe(client, { type: "subscribed_dm", threadId });
+          return;
+        }
+        if (msg.type === "unsubscribe_dm" && typeof msg.threadId === "string") {
+          const threadId = msg.threadId;
+          client.dmThreads.delete(threadId);
+          wsUnsubscribe(wsByDmThread, threadId, client);
+          return;
+        }
+
+        if (msg.type === "subscribe_home") {
+          client.home = true;
+          wsSendSafe(client, { type: "subscribed_home" });
+          return;
+        }
+        if (msg.type === "unsubscribe_home") {
+          client.home = false;
+          return;
+        }
+      });
+
+      ws.on("close", () => {
+        const wasOnline = isUserOnline(client.userId);
+        wsClients.delete(client);
+        for (const ch of client.channels) wsUnsubscribe(wsByChannel, ch, client);
+        for (const th of client.dmThreads) wsUnsubscribe(wsByDmThread, th, client);
+        wsUnsubscribe(wsByUserId, client.userId, client);
+        if (wasOnline && !isUserOnline(client.userId)) {
+          void wsBroadcastRoomsForUser(client.userId, { type: "room_presence", userId: client.userId, online: false });
+        }
+      });
+
+      wsSendSafe(client, { type: "hello", userId });
+    } catch {
+      try {
+        ws.close(1011, "server_error");
+      } catch {
+        // ignore
+      }
+    }
+  });
+}
+
+const app = express();
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: "5mb" }));
+
+const RP_ID = process.env.RP_ID ?? "localhost";
+const RP_ORIGIN = process.env.RP_ORIGIN ?? "http://localhost:5173";
+const RP_NAME = process.env.RP_NAME ?? "YuiRoom";
+
+const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-secret-change-me";
+const TOKEN_TTL_SEC = 60 * 60 * 24 * 7; // 7 days
+
+const USER_ID_REGEX = /^[a-z0-9_-]{3,32}$/;
+
+function normalizeUserId(v: string) {
+  return v.trim().toLowerCase();
+}
+
+function validateUserId(userId: unknown): string | null {
+  if (typeof userId !== "string") return "userId_must_be_string";
+  const v = normalizeUserId(userId);
+  if (!v) return "userId_required";
+  if (!USER_ID_REGEX.test(v)) return "userId_invalid";
+  return null;
+}
+
+function validateDisplayName(name: unknown): string | null {
+  if (typeof name !== "string") return "displayName_must_be_string";
+  const v = name.trim();
+  if (!v) return "displayName_required";
+  if (v.length > 32) return "displayName_too_long";
+  if (/[^\S\r\n]*[\r\n]+[^\S\r\n]*/.test(v)) return "displayName_no_newlines";
+  return null;
+}
+
+function toBase64url(buf: Buffer) {
+  return buf
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function fromBase64url(s: string) {
+  const base64 = s.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = base64.length % 4 === 0 ? "" : "=".repeat(4 - (base64.length % 4));
+  return Buffer.from(base64 + pad, "base64");
+}
+
+function signAuthToken(userId: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const payloadObj = { sub: userId, iat: now, exp: now + TOKEN_TTL_SEC };
+  const payload = toBase64url(Buffer.from(JSON.stringify(payloadObj), "utf-8"));
+  const sig = toBase64url(createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  return `${payload}.${sig}`;
+}
+
+function verifyAuthToken(token: string): string | null {
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  if (!payload || !sig) return null;
+
+  const expected = toBase64url(createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  try {
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return null;
+    if (!timingSafeEqual(a, b)) return null;
+  } catch {
+    return null;
+  }
+
+  try {
+    const json = fromBase64url(payload).toString("utf-8");
+    const obj = JSON.parse(json);
+    const sub = typeof obj?.sub === "string" ? obj.sub : null;
+    const exp = typeof obj?.exp === "number" ? obj.exp : null;
+    if (!sub || !exp) return null;
+    const now = Math.floor(Date.now() / 1000);
+    if (now >= exp) return null;
+    const idErr = validateUserId(sub);
+    if (idErr) return null;
+    return normalizeUserId(sub);
+  } catch {
+    return null;
+  }
+}
+
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const h = req.header("authorization") || "";
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  const token = m?.[1]?.trim();
+  if (!token) return res.status(401).json({ error: "auth_required" });
+  const userId = verifyAuthToken(token);
+  if (!userId) return res.status(401).json({ error: "auth_invalid" });
+  (req as any).userId = userId;
+  next();
+}
+
+function authedUserId(req: express.Request): string | null {
+  const h = req.header("authorization") || "";
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  const token = m?.[1]?.trim();
+  if (!token) return null;
+  return verifyAuthToken(token);
+}
+
+function authedUserIdWithQueryToken(req: express.Request): string | null {
+  const headerUser = authedUserId(req);
+  if (headerUser) return headerUser;
+  const token = typeof req.query?.token === "string" ? req.query.token.trim() : "";
+  if (!token) return null;
+  return verifyAuthToken(token);
+}
+
+function validateName(name: unknown, field: string) {
+  if (typeof name !== "string") return `${field}_must_be_string`;
+  const v = name.trim();
+  if (!v) return `${field}_required`;
+  if (v.length > 64) return `${field}_too_long`;
+  if (/[\r\n]/.test(v)) return `${field}_no_newlines`;
+  return null;
+}
+
+function validateMessageContent(content: unknown) {
+  if (typeof content !== "string") return "content_must_be_string";
+  const v = content.trim();
+  if (!v) return "content_required";
+  if (v.length > 2000) return "content_too_long";
+  return null;
+}
+
+function validateEmoji(emoji: unknown) {
+  if (typeof emoji !== "string") return "emoji_must_be_string";
+  const v = emoji.trim();
+  if (!v) return "emoji_required";
+  if (v.length > 16) return "emoji_too_long";
+  if (/\s/.test(v)) return "emoji_no_spaces";
+  return null;
+}
+
+function normalizeInviteCode(code: string) {
+  return code.trim().toLowerCase();
+}
+
+function validateInviteCode(code: unknown) {
+  if (typeof code !== "string") return "invite_code_must_be_string";
+  const v = normalizeInviteCode(code);
+  if (!v) return "invite_code_required";
+  if (!/^[a-z0-9]{6,32}$/.test(v)) return "invite_code_invalid";
+  return null;
+}
+
+function pairKey(a: string, b: string) {
+  const x = normalizeUserId(a);
+  const y = normalizeUserId(b);
+  return x < y ? `${x}|${y}` : `${y}|${x}`;
+}
+
+async function areFriends(userA: string, userB: string) {
+  const key = pairKey(userA, userB);
+  const [u1, u2] = key.split("|");
+  const r = await pool.query(
+    `SELECT id FROM friendships WHERE user1_id=$1 AND user2_id=$2`,
+    [u1, u2]
+  );
+  return (r.rowCount ?? 0) > 0;
+}
+
+async function isRoomOwner(roomId: string, userId: string) {
+  const r = await pool.query(`SELECT owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if ((r.rowCount ?? 0) === 0) return null;
+  const ownerId = r.rows?.[0]?.owner_id;
+  if (!ownerId) return false;
+  return String(ownerId) === userId;
+}
+
+async function assertRoomOwner(roomId: string, userId: string, res: any) {
+  const ok = await isRoomOwner(roomId, userId);
+  if (ok === null) {
+    res.status(404).json({ error: "room_not_found" });
+    return false;
+  }
+  if (!ok) {
+    res.status(403).json({ error: "forbidden" });
+    return false;
+  }
+  return true;
+}
+
+async function isBannedFromRoom(roomId: string, userId: string) {
+  const b = await pool.query(
+    `SELECT 1 FROM room_bans WHERE room_id=$1 AND user_id=$2`,
+    [roomId, userId]
+  );
+  return (b.rowCount ?? 0) > 0;
+}
+
+async function assertNotBannedFromRoom(roomId: string, userId: string, res: any) {
+  if (await isBannedFromRoom(roomId, userId)) {
+    res.status(403).json({ error: "room_banned" });
+    return false;
+  }
+  return true;
+}
+
+async function isRoomMemberOrPublic(roomId: string, userId: string) {
+  const r = await pool.query(`SELECT owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if ((r.rowCount ?? 0) === 0) return null;
+  const ownerId = r.rows?.[0]?.owner_id;
+  if (!ownerId) return true; // public room (legacy)
+  if (String(ownerId) === userId) return true;
+  const m = await pool.query(
+    `SELECT 1 FROM room_members WHERE room_id=$1 AND user_id=$2`,
+    [roomId, userId]
+  );
+  return (m.rowCount ?? 0) > 0;
+}
+
+async function assertRoomMember(roomId: string, userId: string, res: any) {
+  const ok = await isRoomMemberOrPublic(roomId, userId);
+  if (ok === null) {
+    res.status(404).json({ error: "room_not_found" });
+    return false;
+  }
+  if (!ok) {
+    res.status(403).json({ error: "not_member" });
+    return false;
+  }
+  return true;
+}
+
+function parseDataUrlImage(dataUrl: string): { mime: string; bytes: Buffer } | null {
+  // data:image/png;base64,....
+  const m = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
+  if (!m || !m[1] || !m[2]) return null;
+  const mime = String(m[1]).toLowerCase();
+  if (!mime.startsWith("image/")) return null;
+  const b64 = String(m[2]);
+  const bytes = Buffer.from(b64, "base64");
+  return { mime, bytes };
+}
+
+// health
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// --- Friends / DM (Home) ---
+
+// list friends
+app.get("/friends", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const { rows } = await pool.query(
+    `SELECT
+        CASE WHEN f.user1_id=$1 THEN f.user2_id ELSE f.user1_id END AS user_id,
+        u.display_name,
+        (u.avatar_data IS NOT NULL) AS has_avatar
+     FROM friendships f
+     JOIN users u
+       ON u.id = CASE WHEN f.user1_id=$1 THEN f.user2_id ELSE f.user1_id END
+     WHERE f.user1_id=$1 OR f.user2_id=$1
+     ORDER BY u.display_name ASC`,
+    [me]
+  );
+  res.json(rows.map((r) => ({ userId: r.user_id, displayName: r.display_name, hasAvatar: !!r.has_avatar })));
+});
+
+// delete friend (unfriend)
+app.delete("/friends/:userId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const otherParam = req.params.userId;
+  const otherErr = validateUserId(otherParam);
+  if (otherErr) return res.status(400).json({ error: otherErr });
+  const other = normalizeUserId(String(otherParam));
+  if (other === me) return res.status(400).json({ error: "cannot_unfriend_self" });
+
+  const key = pairKey(me, other);
+  const [u1, u2] = key.split("|");
+
+  // remove friendship
+  const del = await pool.query(
+    `DELETE FROM friendships WHERE user1_id=$1 AND user2_id=$2`,
+    [u1, u2]
+  );
+  if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "not_friends" });
+
+  // clean up pending requests between them
+  await pool.query(
+    `UPDATE friend_requests
+     SET status='rejected'
+     WHERE status='pending'
+       AND ((from_user_id=$1 AND to_user_id=$2) OR (from_user_id=$2 AND to_user_id=$1))`,
+    [me, other]
+  );
+
+  // realtime: update both sides
+  wsBroadcastUser(me, { type: "home_updated" });
+  wsBroadcastUser(other, { type: "home_updated" });
+
+  res.json({ ok: true });
+});
+
+// list friend requests
+app.get("/friends/requests", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const incoming = await pool.query(
+    `SELECT fr.id, fr.from_user_id AS user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar
+     FROM friend_requests fr
+     JOIN users u ON u.id = fr.from_user_id
+     WHERE fr.to_user_id=$1 AND fr.status='pending'
+     ORDER BY fr.created_at DESC`,
+    [me]
+  );
+  const outgoing = await pool.query(
+    `SELECT fr.id, fr.to_user_id AS user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar
+     FROM friend_requests fr
+     JOIN users u ON u.id = fr.to_user_id
+     WHERE fr.from_user_id=$1 AND fr.status='pending'
+     ORDER BY fr.created_at DESC`,
+    [me]
+  );
+  res.json({
+    incoming: incoming.rows.map((r) => ({ id: r.id, userId: r.user_id, displayName: r.display_name, hasAvatar: !!r.has_avatar })),
+    outgoing: outgoing.rows.map((r) => ({ id: r.id, userId: r.user_id, displayName: r.display_name, hasAvatar: !!r.has_avatar })),
+  });
+});
+
+// send friend request
+app.post("/friends/requests", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const toErr = validateUserId(req.body?.toUserId);
+  if (toErr) return res.status(400).json({ error: toErr });
+  const toUserId = normalizeUserId(req.body.toUserId);
+  if (toUserId === me) return res.status(400).json({ error: "cannot_friend_self" });
+
+  const u = await pool.query(`SELECT id FROM users WHERE id=$1`, [toUserId]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+
+  if (await areFriends(me, toUserId)) return res.status(409).json({ error: "already_friends" });
+
+  const existing = await pool.query(
+    `SELECT id FROM friend_requests
+     WHERE status='pending'
+       AND ((from_user_id=$1 AND to_user_id=$2) OR (from_user_id=$2 AND to_user_id=$1))`,
+    [me, toUserId]
+  );
+  if ((existing.rowCount ?? 0) > 0) return res.status(409).json({ error: "request_already_exists" });
+
+  const id = randomUUID();
+  await pool.query(
+    `INSERT INTO friend_requests (id, from_user_id, to_user_id, status)
+     VALUES ($1, $2, $3, 'pending')`,
+    [id, me, toUserId]
+  );
+
+  // realtime: update both sides (incoming/outgoing)
+  wsBroadcastUser(toUserId, { type: "home_updated" });
+  wsBroadcastUser(me, { type: "home_updated" });
+
+  res.status(201).json({ ok: true, id });
+});
+
+// accept friend request
+app.post("/friends/requests/:requestId/accept", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const requestId = String(req.params.requestId || "");
+  if (!requestId) return res.status(400).json({ error: "requestId_required" });
+
+  await pool.query("BEGIN");
+  try {
+    let otherUserId: string | null = null;
+    const fr = await pool.query(
+      `SELECT id, from_user_id, to_user_id, status
+       FROM friend_requests
+       WHERE id=$1`,
+      [requestId]
+    );
+    if ((fr.rowCount ?? 0) === 0) {
+      await pool.query("ROLLBACK");
+      return res.status(404).json({ error: "request_not_found" });
+    }
+    const row = fr.rows[0];
+    otherUserId = String(row.from_user_id || "") || null;
+    if (row.to_user_id !== me) {
+      await pool.query("ROLLBACK");
+      return res.status(403).json({ error: "forbidden" });
+    }
+    if (row.status !== "pending") {
+      await pool.query("ROLLBACK");
+      return res.status(409).json({ error: "request_not_pending" });
+    }
+
+    const key = pairKey(row.from_user_id, row.to_user_id);
+    const [u1, u2] = key.split("|");
+    await pool.query(
+      `INSERT INTO friendships (id, user1_id, user2_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user1_id, user2_id) DO NOTHING`,
+      [randomUUID(), u1, u2]
+    );
+
+    await pool.query(`UPDATE friend_requests SET status='accepted' WHERE id=$1`, [requestId]);
+
+    // reverse pending request cleanup
+    await pool.query(
+      `UPDATE friend_requests
+       SET status='rejected'
+       WHERE status='pending'
+         AND ((from_user_id=$1 AND to_user_id=$2) OR (from_user_id=$2 AND to_user_id=$1))
+         AND id <> $3`,
+      [row.from_user_id, row.to_user_id, requestId]
+    );
+
+    await pool.query("COMMIT");
+
+    // realtime: update both sides (requests removed, friend added)
+    wsBroadcastUser(me, { type: "home_updated" });
+    if (otherUserId) wsBroadcastUser(otherUserId, { type: "home_updated" });
+
+    res.json({ ok: true });
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    throw e;
+  }
+});
+
+// reject friend request
+app.post("/friends/requests/:requestId/reject", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const requestId = String(req.params.requestId || "");
+  if (!requestId) return res.status(400).json({ error: "requestId_required" });
+
+  const fr = await pool.query(
+    `SELECT id, from_user_id, to_user_id, status FROM friend_requests WHERE id=$1`,
+    [requestId]
+  );
+  if ((fr.rowCount ?? 0) === 0) return res.status(404).json({ error: "request_not_found" });
+  const row = fr.rows[0];
+  if (row.to_user_id !== me) return res.status(403).json({ error: "forbidden" });
+  if (row.status !== "pending") return res.status(409).json({ error: "request_not_pending" });
+
+  await pool.query(`UPDATE friend_requests SET status='rejected' WHERE id=$1`, [requestId]);
+
+  // realtime: update both sides
+  wsBroadcastUser(me, { type: "home_updated" });
+  const other = String(row.from_user_id || "");
+  if (other) wsBroadcastUser(other, { type: "home_updated" });
+
+  res.json({ ok: true });
+});
+
+// list dm threads
+app.get("/dm/threads", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const { rows } = await pool.query(
+    `SELECT t.id AS thread_id,
+            other.id AS user_id,
+            other.display_name,
+            (other.avatar_data IS NOT NULL) AS has_avatar
+     FROM dm_members m
+     JOIN dm_threads t ON t.id = m.thread_id
+     JOIN dm_members m2 ON m2.thread_id = m.thread_id AND m2.user_id <> $1
+     JOIN users other ON other.id = m2.user_id
+     JOIN friendships f
+       ON f.user1_id = LEAST($1, other.id)
+      AND f.user2_id = GREATEST($1, other.id)
+     WHERE m.user_id = $1
+     ORDER BY t.created_at DESC`,
+    [me]
+  );
+  res.json(rows.map((r) => ({ threadId: r.thread_id, userId: r.user_id, displayName: r.display_name, hasAvatar: !!r.has_avatar })));
+});
+
+// open or create 1:1 dm thread with friend
+app.post("/dm/threads", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const otherErr = validateUserId(req.body?.userId);
+  if (otherErr) return res.status(400).json({ error: otherErr });
+  const other = normalizeUserId(req.body.userId);
+  if (other === me) return res.status(400).json({ error: "cannot_dm_self" });
+
+  const u = await pool.query(`SELECT id FROM users WHERE id=$1`, [other]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+
+  if (!(await areFriends(me, other))) return res.status(403).json({ error: "not_friends" });
+
+  const key = pairKey(me, other);
+  const existing = await pool.query(`SELECT id FROM dm_threads WHERE dm_key=$1`, [key]);
+  if ((existing.rowCount ?? 0) > 0) {
+    return res.json({ ok: true, threadId: existing.rows[0].id });
+  }
+
+  const threadId = randomUUID();
+  await pool.query("BEGIN");
+  try {
+    await pool.query(`INSERT INTO dm_threads (id, dm_key) VALUES ($1, $2)`, [threadId, key]);
+    await pool.query(`INSERT INTO dm_members (thread_id, user_id) VALUES ($1, $2)`, [threadId, me]);
+    await pool.query(`INSERT INTO dm_members (thread_id, user_id) VALUES ($1, $2)`, [threadId, other]);
+    await pool.query("COMMIT");
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    // race: if created by other request
+    const ex2 = await pool.query(`SELECT id FROM dm_threads WHERE dm_key=$1`, [key]);
+    if ((ex2.rowCount ?? 0) > 0) return res.json({ ok: true, threadId: ex2.rows[0].id });
+    throw e;
+  }
+
+  res.status(201).json({ ok: true, threadId });
+});
+
+// list dm messages
+app.get("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const threadId = String(req.params.threadId || "");
+  if (!threadId) return res.status(400).json({ error: "threadId_required" });
+
+  const member = await pool.query(`SELECT 1 FROM dm_members WHERE thread_id=$1 AND user_id=$2`, [threadId, me]);
+  if ((member.rowCount ?? 0) === 0) return res.status(403).json({ error: "forbidden" });
+
+  const otherQ = await pool.query(
+    `SELECT user_id FROM dm_members WHERE thread_id=$1 AND user_id <> $2 LIMIT 1`,
+    [threadId, me]
+  );
+  const other = String(otherQ.rows?.[0]?.user_id || "");
+  if (!other) return res.status(403).json({ error: "forbidden" });
+  if (!(await areFriends(me, other))) return res.status(403).json({ error: "not_friends" });
+
+  const limitRaw = req.query.limit;
+  const limit = Math.min(200, Math.max(1, Number(limitRaw ?? 50) || 50));
+
+  const { rows } = await pool.query(
+    `SELECT m.id, m.thread_id, m.author_id, u.display_name AS author_name,
+            (u.avatar_data IS NOT NULL) AS author_has_avatar,
+            m.content, m.created_at
+     FROM dm_messages m
+     JOIN users u ON u.id = m.author_id
+     WHERE m.thread_id=$1
+     ORDER BY m.created_at ASC
+     LIMIT $2`,
+    [threadId, limit]
+  );
+  res.json(rows.map((r) => ({
+    id: r.id,
+    thread_id: r.thread_id,
+    author_id: r.author_id,
+    author: r.author_name,
+    author_has_avatar: !!r.author_has_avatar,
+    content: r.content,
+    created_at: r.created_at,
+  })));
+});
+
+// send dm message
+app.post("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const threadId = String(req.params.threadId || "");
+  if (!threadId) return res.status(400).json({ error: "threadId_required" });
+
+  const member = await pool.query(`SELECT 1 FROM dm_members WHERE thread_id=$1 AND user_id=$2`, [threadId, me]);
+  if ((member.rowCount ?? 0) === 0) return res.status(403).json({ error: "forbidden" });
+
+  const otherQ = await pool.query(
+    `SELECT user_id FROM dm_members WHERE thread_id=$1 AND user_id <> $2 LIMIT 1`,
+    [threadId, me]
+  );
+  const other = String(otherQ.rows?.[0]?.user_id || "");
+  if (!other) return res.status(403).json({ error: "forbidden" });
+  if (!(await areFriends(me, other))) return res.status(403).json({ error: "not_friends" });
+
+  const contentErr = validateMessageContent(req.body?.content);
+  if (contentErr) return res.status(400).json({ error: contentErr });
+  const content = String(req.body.content).trim();
+
+  const id = randomUUID();
+  await pool.query(
+    `INSERT INTO dm_messages (id, thread_id, author_id, content)
+     VALUES ($1, $2, $3, $4)`,
+    [id, threadId, me, content]
+  );
+
+  const u = await pool.query(`SELECT display_name, (avatar_data IS NOT NULL) AS has FROM users WHERE id=$1`, [me]);
+  const authorName = String(u.rows?.[0]?.display_name || me);
+  const authorHasAvatar = !!u.rows?.[0]?.has;
+
+  const payload = {
+    id,
+    thread_id: threadId,
+    author_id: me,
+    author: authorName,
+    author_has_avatar: authorHasAvatar,
+    content,
+    created_at: new Date().toISOString(),
+  };
+
+  // realtime: broadcast to subscribers of this DM thread
+  wsBroadcastDm(threadId, { type: "dm_message_created", threadId, message: payload });
+
+  res.status(201).json(payload);
+});
+
+// user avatar (stored in DB)
+app.get("/users/:userId/avatar", async (req, res) => {
+  const userIdParam = req.params.userId;
+  const userIdErr = validateUserId(userIdParam);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const userId = normalizeUserId(String(userIdParam));
+
+  const u = await pool.query(
+    `SELECT avatar_mime, avatar_data FROM users WHERE id=$1`,
+    [userId]
+  );
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+  const mime = u.rows[0]?.avatar_mime;
+  const data = u.rows[0]?.avatar_data;
+  if (!mime || !data) return res.status(404).json({ error: "avatar_not_found" });
+  res.setHeader("content-type", mime);
+  // simple cache: avatars change rarely
+  res.setHeader("cache-control", "public, max-age=300");
+  res.send(data);
+});
+
+app.post("/users/:userId/avatar", requireAuth, async (req, res) => {
+  // NOTE: must be authenticated as the same user
+  const userIdParam = req.params.userId;
+  const userIdErr = validateUserId(userIdParam);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const userId = normalizeUserId(String(userIdParam));
+
+  const me = (req as any).userId as string;
+  if (me !== userId) return res.status(403).json({ error: "forbidden" });
+
+  const u = await pool.query(`SELECT id FROM users WHERE id=$1`, [userId]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+
+  const dataUrl = req.body?.dataUrl;
+  if (dataUrl == null || dataUrl === "") {
+    await pool.query(`UPDATE users SET avatar_mime=NULL, avatar_data=NULL WHERE id=$1`, [userId]);
+    return res.json({ ok: true });
+  }
+  if (typeof dataUrl !== "string") return res.status(400).json({ error: "dataUrl_must_be_string_or_null" });
+
+  const parsed = parseDataUrlImage(String(dataUrl));
+  if (!parsed) return res.status(400).json({ error: "avatar_invalid_dataUrl" });
+  if (parsed.bytes.length > 2 * 1024 * 1024) return res.status(400).json({ error: "avatar_too_large" });
+
+  await pool.query(
+    `UPDATE users SET avatar_mime=$2, avatar_data=$3 WHERE id=$1`,
+    [userId, parsed.mime, parsed.bytes]
+  );
+  return res.json({ ok: true });
+});
+
+// --- Passkey (WebAuthn) auth ---
+app.post("/auth/register/options", async (req, res) => {
+  const userIdErr = validateUserId(req.body?.userId);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const nameErr = validateDisplayName(req.body?.displayName);
+  if (nameErr) return res.status(400).json({ error: nameErr });
+
+  const userId = normalizeUserId(req.body.userId);
+  const displayName = String(req.body.displayName).trim();
+
+  const existing = await pool.query(`SELECT id FROM users WHERE id=$1`, [userId]);
+  if ((existing.rowCount ?? 0) > 0) {
+    const creds = await pool.query(`SELECT COUNT(*)::int AS c FROM passkey_credentials WHERE user_id=$1`, [userId]);
+    if (creds.rows?.[0]?.c > 0) return res.status(409).json({ error: "user_exists" });
+    await pool.query(`UPDATE users SET display_name=$2 WHERE id=$1`, [userId, displayName]);
+  } else {
+    await pool.query(`INSERT INTO users (id, display_name) VALUES ($1, $2)`, [userId, displayName]);
+  }
+
+  const userHandle = createHash("sha256").update(userId).digest();
+
+  const options = await generateRegistrationOptions({
+    rpName: RP_NAME,
+    rpID: RP_ID,
+    userName: userId,
+    userID: userHandle,
+    userDisplayName: displayName,
+    attestationType: "none",
+    authenticatorSelection: {
+      residentKey: "preferred",
+      userVerification: "preferred",
+    },
+    timeout: 60_000,
+    excludeCredentials: [],
+  });
+
+  await pool.query(`UPDATE users SET current_challenge=$2 WHERE id=$1`, [userId, options.challenge]);
+  res.json(options);
+});
+
+app.post("/auth/register/verify", async (req, res) => {
+  const userIdErr = validateUserId(req.body?.userId);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  if (!req.body?.response) return res.status(400).json({ error: "response_required" });
+
+  const userId = normalizeUserId(req.body.userId);
+  const user = await pool.query(
+    `SELECT id, display_name, current_challenge FROM users WHERE id=$1`,
+    [userId]
+  );
+  if (user.rowCount === 0) return res.status(404).json({ error: "user_not_found" });
+
+  const expectedChallenge = user.rows[0].current_challenge;
+  if (!expectedChallenge) return res.status(400).json({ error: "challenge_missing" });
+
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response: req.body.response,
+      expectedChallenge,
+      expectedOrigin: RP_ORIGIN,
+      expectedRPID: RP_ID,
+      requireUserVerification: false,
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(400).json({ error: "webauthn_verify_failed" });
+  }
+
+  if (!verification.verified || !verification.registrationInfo) {
+    return res.status(400).json({ error: "webauthn_not_verified" });
+  }
+
+  const cred = verification.registrationInfo.credential;
+  const credentialId = String(cred.id);
+  const publicKey = toBase64url(Buffer.from(cred.publicKey));
+  const counter = Number(cred.counter) || 0;
+  const transports = Array.isArray(cred.transports) ? cred.transports : [];
+
+  await pool.query(
+    `INSERT INTO passkey_credentials (id, user_id, credential_id, public_key, counter, transports)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [randomUUID(), userId, credentialId, publicKey, counter, transports]
+  );
+  await pool.query(`UPDATE users SET current_challenge=NULL WHERE id=$1`, [userId]);
+
+  const token = signAuthToken(userId);
+  res.json({ ok: true, userId, displayName: user.rows[0].display_name, token });
+});
+
+app.post("/auth/login/options", async (req, res) => {
+  const userIdErr = validateUserId(req.body?.userId);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+
+  const userId = normalizeUserId(req.body.userId);
+
+  const user = await pool.query(`SELECT id FROM users WHERE id=$1`, [userId]);
+  if (user.rowCount === 0) return res.status(404).json({ error: "user_not_found" });
+
+  const creds = await pool.query(
+    `SELECT credential_id, transports FROM passkey_credentials WHERE user_id=$1 ORDER BY created_at ASC`,
+    [userId]
+  );
+  if (creds.rowCount === 0) return res.status(404).json({ error: "no_credentials" });
+
+  const options = await generateAuthenticationOptions({
+    rpID: RP_ID,
+    userVerification: "preferred",
+    timeout: 60_000,
+    allowCredentials: creds.rows.map((c) => ({
+      id: c.credential_id,
+      transports: Array.isArray(c.transports) ? c.transports : undefined,
+    })),
+  });
+
+  await pool.query(`UPDATE users SET current_challenge=$2 WHERE id=$1`, [userId, options.challenge]);
+  res.json(options);
+});
+
+app.post("/auth/login/verify", async (req, res) => {
+  const userIdErr = validateUserId(req.body?.userId);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  if (!req.body?.response) return res.status(400).json({ error: "response_required" });
+
+  const userId = normalizeUserId(req.body.userId);
+  const user = await pool.query(
+    `SELECT id, display_name, current_challenge FROM users WHERE id=$1`,
+    [userId]
+  );
+  if (user.rowCount === 0) return res.status(404).json({ error: "user_not_found" });
+
+  const expectedChallenge = user.rows[0].current_challenge;
+  if (!expectedChallenge) return res.status(400).json({ error: "challenge_missing" });
+
+  const credentialId = req.body?.response?.id;
+  if (typeof credentialId !== "string") return res.status(400).json({ error: "credentialId_missing" });
+
+  const cred = await pool.query(
+    `SELECT credential_id, public_key, counter, transports
+     FROM passkey_credentials
+     WHERE user_id=$1 AND credential_id=$2`,
+    [userId, credentialId]
+  );
+  if (cred.rowCount === 0) return res.status(404).json({ error: "credential_not_found" });
+
+  const row = cred.rows[0];
+
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response: req.body.response,
+      expectedChallenge,
+      expectedOrigin: RP_ORIGIN,
+      expectedRPID: RP_ID,
+      requireUserVerification: false,
+      credential: {
+        id: row.credential_id,
+        publicKey: fromBase64url(row.public_key),
+        counter: Number(row.counter) || 0,
+        transports: Array.isArray(row.transports) ? row.transports : undefined,
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(400).json({ error: "webauthn_verify_failed" });
+  }
+
+  if (!verification.verified || !verification.authenticationInfo) {
+    return res.status(400).json({ error: "webauthn_not_verified" });
+  }
+
+  await pool.query(
+    `UPDATE passkey_credentials SET counter=$3 WHERE user_id=$1 AND credential_id=$2`,
+    [userId, credentialId, verification.authenticationInfo.newCounter]
+  );
+  await pool.query(`UPDATE users SET current_challenge=NULL WHERE id=$1`, [userId]);
+
+  const token = signAuthToken(userId);
+  res.json({ ok: true, userId, displayName: user.rows[0].display_name, token });
+});
+
+// update user display name (server-side)
+app.post("/users/:userId/displayName", requireAuth, async (req, res) => {
+  const userIdParam = req.params.userId;
+  const userIdErr = validateUserId(userIdParam);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const userId = normalizeUserId(String(userIdParam));
+
+  const me = (req as any).userId as string;
+  if (me !== userId) return res.status(403).json({ error: "forbidden" });
+
+  const nameErr = validateDisplayName(req.body?.displayName);
+  if (nameErr) return res.status(400).json({ error: nameErr });
+  const displayName = String(req.body.displayName).trim();
+
+  const u = await pool.query(`SELECT id FROM users WHERE id=$1`, [userId]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+
+  await pool.query(`UPDATE users SET display_name=$2 WHERE id=$1`, [userId, displayName]);
+  return res.json({ ok: true });
+});
+
+// list rooms
+app.get("/rooms", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const { rows } = await pool.query(
+    `SELECT r.id, r.name, r.owner_id
+     FROM rooms r
+     WHERE NOT EXISTS (
+       SELECT 1 FROM room_bans b
+       WHERE b.room_id = r.id AND b.user_id = $1
+     )
+     AND (
+       r.owner_id IS NULL
+       OR r.owner_id = $1
+       OR EXISTS (
+         SELECT 1 FROM room_members rm
+         WHERE rm.room_id = r.id AND rm.user_id = $1
+       )
+     )
+     ORDER BY r.created_at ASC`,
+    [me]
+  );
+  res.json(rows);
+});
+
+// create room
+app.post("/rooms", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const nameErr = validateName(req.body?.name, "name");
+  if (nameErr) return res.status(400).json({ error: nameErr });
+
+  const id = randomUUID();
+  const name = String(req.body.name).trim();
+
+  // Room作成時にデフォルト構成も同時に作成
+  // - カテゴリ: 「一般」
+  // - チャンネル: 「雑談」（上記カテゴリ配下）
+  const categoryId = randomUUID();
+  const channelId = randomUUID();
+
+  await pool.query("BEGIN");
+  try {
+    await pool.query(`INSERT INTO rooms (id, name, owner_id) VALUES ($1, $2, $3)`, [id, name, me]);
+    await pool.query(
+      `INSERT INTO room_members (room_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [id, me]
+    );
+    await pool.query(
+      `INSERT INTO categories (id, room_id, name, position) VALUES ($1, $2, $3, $4)`,
+      [categoryId, id, "一般", 0]
+    );
+    await pool.query(
+      `INSERT INTO channels (id, room_id, category_id, name, position) VALUES ($1, $2, $3, $4, $5)`,
+      [channelId, id, categoryId, "雑談", 0]
+    );
+    await pool.query("COMMIT");
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    throw e;
+  }
+
+  res.status(201).json({ id, name, owner_id: me });
+});
+
+// delete room
+app.delete("/rooms/:roomId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  await pool.query(`DELETE FROM rooms WHERE id=$1`, [roomId]);
+  res.json({ ok: true });
+});
+
+// room tree: categories + channels
+app.get("/rooms/:roomId/tree", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+
+  const room = await pool.query(`SELECT id, name, owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if (room.rowCount === 0) return res.status(404).json({ error: "room_not_found" });
+
+  if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (!(await assertRoomMember(roomId, me, res))) return;
+
+  const cats = await pool.query(
+    `SELECT id, name, position FROM categories WHERE room_id=$1 ORDER BY position ASC`,
+    [roomId]
+  );
+
+  const chans = await pool.query(
+    `SELECT id, name, position, category_id
+     FROM channels
+     WHERE room_id=$1
+     ORDER BY category_id NULLS LAST, position ASC`,
+    [roomId]
+  );
+
+  const byCat: Record<string, any[]> = {};
+  for (const ch of chans.rows) {
+    const key = ch.category_id ?? "__uncategorized__";
+    (byCat[key] ||= []).push({ id: ch.id, name: ch.name, position: ch.position });
+  }
+
+  const categories = cats.rows.map((c) => ({
+    id: c.id,
+    name: c.name,
+    position: c.position,
+    channels: byCat[c.id] ?? [],
+  }));
+
+  const uncategorized = byCat["__uncategorized__"] ?? [];
+
+  res.json({
+    room: room.rows[0],
+    categories,
+    uncategorized,
+  });
+});
+
+// room bans (owner only)
+app.get("/rooms/:roomId/bans", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const { rows } = await pool.query(
+    `SELECT b.user_id, u.display_name, b.reason, b.created_at
+     FROM room_bans b
+     JOIN users u ON u.id = b.user_id
+     WHERE b.room_id=$1
+     ORDER BY b.created_at DESC`,
+    [roomId]
+  );
+  res.json(rows.map((r) => ({ userId: r.user_id, displayName: r.display_name, reason: r.reason ?? null, created_at: r.created_at })));
+});
+
+app.post("/rooms/:roomId/bans", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const userIdErr = validateUserId(req.body?.userId);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const target = normalizeUserId(String(req.body.userId));
+  if (target === me) return res.status(400).json({ error: "cannot_ban_self" });
+
+  const u = await pool.query(`SELECT id FROM users WHERE id=$1`, [target]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+
+  const reasonRaw = req.body?.reason;
+  const reason = typeof reasonRaw === "string" ? reasonRaw.trim() : "";
+  if (reason.length > 200) return res.status(400).json({ error: "reason_too_long" });
+  if (/[\r\n]/.test(reason)) return res.status(400).json({ error: "reason_no_newlines" });
+
+  await pool.query(
+    `INSERT INTO room_bans (id, room_id, user_id, banned_by, reason)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (room_id, user_id) DO NOTHING`,
+    [randomUUID(), roomId, target, me, reason || null]
+  );
+
+  await wsBroadcastRoom(roomId, { type: "room_ban_changed", roomId, userId: target, banned: true });
+  await wsKickUserFromRoom(target, roomId);
+  res.json({ ok: true });
+});
+
+app.delete("/rooms/:roomId/bans/:userId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const userIdErr = validateUserId(req.params.userId);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const target = normalizeUserId(String(req.params.userId));
+
+  await pool.query(`DELETE FROM room_bans WHERE room_id=$1 AND user_id=$2`, [roomId, target]);
+  await wsBroadcastRoom(roomId, { type: "room_ban_changed", roomId, userId: target, banned: false });
+  wsBroadcastUserAll(target, { type: "room_unbanned", roomId });
+  res.json({ ok: true });
+});
+
+// room invites (owner only)
+app.post("/rooms/:roomId/invites", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  // legacy public rooms have no owner_id; disallow invites to avoid confusion
+  const room = await pool.query(`SELECT owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if ((room.rowCount ?? 0) === 0) return res.status(404).json({ error: "room_not_found" });
+  if (!room.rows?.[0]?.owner_id) return res.status(400).json({ error: "room_public_no_invite" });
+
+  let code = "";
+  for (let i = 0; i < 8; i++) {
+    code = normalizeInviteCode(randomUUID().replace(/-/g, "").slice(0, 12));
+    try {
+      await pool.query(
+        `INSERT INTO room_invites (code, room_id, created_by, max_uses, expires_at)
+         VALUES ($1, $2, $3, 10, (now() + INTERVAL '7 days'))`,
+        [code, roomId, me]
+      );
+      break;
+    } catch (e: any) {
+      // retry on conflict
+      if (String(e?.code || "") === "23505") continue;
+      throw e;
+    }
+  }
+
+  if (!code) return res.status(500).json({ error: "invite_create_failed" });
+  res.status(201).json({ code, roomId });
+});
+
+app.get("/rooms/:roomId/invites", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const room = await pool.query(`SELECT owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if ((room.rowCount ?? 0) === 0) return res.status(404).json({ error: "room_not_found" });
+  if (!room.rows?.[0]?.owner_id) return res.status(400).json({ error: "room_public_no_invite" });
+
+  const { rows } = await pool.query(
+    `SELECT code, uses, max_uses, expires_at, created_at
+     FROM room_invites
+     WHERE room_id=$1
+     ORDER BY created_at DESC`,
+    [roomId]
+  );
+  res.json(
+    rows.map((r) => ({
+      code: r.code,
+      uses: Number(r.uses ?? 0),
+      max_uses: Number(r.max_uses ?? 10),
+      expires_at: r.expires_at,
+      created_at: r.created_at,
+    }))
+  );
+});
+
+app.delete("/rooms/:roomId/invites/:code", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const room = await pool.query(`SELECT owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if ((room.rowCount ?? 0) === 0) return res.status(404).json({ error: "room_not_found" });
+  if (!room.rows?.[0]?.owner_id) return res.status(400).json({ error: "room_public_no_invite" });
+
+  const codeErr = validateInviteCode(req.params.code);
+  if (codeErr) return res.status(400).json({ error: codeErr });
+  const code = normalizeInviteCode(String(req.params.code));
+
+  const del = await pool.query(`DELETE FROM room_invites WHERE code=$1 AND room_id=$2`, [code, roomId]);
+  if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "invite_not_found" });
+  res.json({ ok: true });
+});
+
+// join room by invite code
+app.post("/invites/join", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const codeErr = validateInviteCode(req.body?.code);
+  if (codeErr) return res.status(400).json({ error: codeErr });
+  const code = normalizeInviteCode(String(req.body.code));
+
+  await pool.query("BEGIN");
+  try {
+    const inv = await pool.query(
+      `SELECT i.code, i.room_id, i.uses, i.max_uses, i.expires_at, r.name
+       FROM room_invites i
+       JOIN rooms r ON r.id = i.room_id
+       WHERE i.code=$1
+       FOR UPDATE`,
+      [code]
+    );
+    if ((inv.rowCount ?? 0) === 0) {
+      await pool.query("ROLLBACK");
+      return res.status(404).json({ error: "invite_not_found" });
+    }
+
+    const roomId = String(inv.rows?.[0]?.room_id || "");
+    const roomName = String(inv.rows?.[0]?.name || "");
+    const uses = Number(inv.rows?.[0]?.uses ?? 0);
+    const maxUses = Number(inv.rows?.[0]?.max_uses ?? 10);
+    const expiresAt = inv.rows?.[0]?.expires_at as any;
+
+    if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
+      await pool.query("ROLLBACK");
+      return res.status(410).json({ error: "invite_expired" });
+    }
+    if (Number.isFinite(maxUses) && uses >= maxUses) {
+      await pool.query("ROLLBACK");
+      return res.status(410).json({ error: "invite_max_uses" });
+    }
+
+    if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) {
+      await pool.query("ROLLBACK");
+      return;
+    }
+
+    await pool.query(
+      `INSERT INTO room_members (room_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [roomId, me]
+    );
+    await pool.query(`UPDATE room_invites SET uses = uses + 1 WHERE code=$1`, [code]);
+
+    await pool.query("COMMIT");
+    await wsBroadcastRoom(roomId, { type: "room_member_changed", roomId, userId: me, joined: true });
+    res.json({ ok: true, roomId, roomName });
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    throw e;
+  }
+});
+
+// room members
+app.get("/rooms/:roomId/members", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+
+  const room = await pool.query(`SELECT id, owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if (room.rowCount === 0) return res.status(404).json({ error: "room_not_found" });
+  const ownerId = room.rows?.[0]?.owner_id ? String(room.rows[0].owner_id) : null;
+  if (!ownerId) return res.status(400).json({ error: "room_public_no_members" });
+
+  if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (!(await assertRoomMember(roomId, me, res))) return;
+
+  const { rows } = await pool.query(
+    `SELECT user_id, display_name, has_avatar
+     FROM (
+       SELECT rm.user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar
+       FROM room_members rm
+       JOIN users u ON u.id = rm.user_id
+       WHERE rm.room_id=$1
+       UNION
+       SELECT r.owner_id AS user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar
+       FROM rooms r
+       JOIN users u ON u.id = r.owner_id
+       WHERE r.id=$1 AND r.owner_id IS NOT NULL
+     ) x
+     ORDER BY display_name ASC`,
+    [roomId]
+  );
+  res.json(
+    rows.map((r) => ({
+      userId: r.user_id,
+      displayName: r.display_name,
+      hasAvatar: !!r.has_avatar,
+      isOwner: ownerId === String(r.user_id),
+      online: isUserOnline(String(r.user_id)),
+    }))
+  );
+});
+
+app.delete("/rooms/:roomId/members/me", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+
+  const room = await pool.query(`SELECT id, owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if (room.rowCount === 0) return res.status(404).json({ error: "room_not_found" });
+  const ownerId = room.rows?.[0]?.owner_id ? String(room.rows[0].owner_id) : null;
+  if (!ownerId) return res.status(400).json({ error: "room_public_no_members" });
+
+  if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (!(await assertRoomMember(roomId, me, res))) return;
+  if (ownerId === me) return res.status(400).json({ error: "owner_cannot_leave" });
+
+  await pool.query(`DELETE FROM room_members WHERE room_id=$1 AND user_id=$2`, [roomId, me]);
+  await wsBroadcastRoom(roomId, { type: "room_member_changed", roomId, userId: me, joined: false });
+  await wsRemoveUserFromRoom(me, roomId, "room_left");
+  res.json({ ok: true });
+});
+
+app.delete("/rooms/:roomId/members/:userId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const userIdErr = validateUserId(req.params.userId);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const target = normalizeUserId(String(req.params.userId));
+  if (target === me) return res.status(400).json({ error: "cannot_kick_self" });
+
+  const room = await pool.query(`SELECT owner_id FROM rooms WHERE id=$1`, [roomId]);
+  if ((room.rowCount ?? 0) === 0) return res.status(404).json({ error: "room_not_found" });
+  if (!room.rows?.[0]?.owner_id) return res.status(400).json({ error: "room_public_no_members" });
+
+  const del = await pool.query(`DELETE FROM room_members WHERE room_id=$1 AND user_id=$2`, [roomId, target]);
+  if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "not_member" });
+
+  await wsBroadcastRoom(roomId, { type: "room_member_changed", roomId, userId: target, joined: false });
+  await wsRemoveUserFromRoom(target, roomId, "room_kicked");
+  res.json({ ok: true });
+});
+
+// room channel activity (for unread)
+app.get("/rooms/:roomId/channels/activity", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+
+  const room = await pool.query(`SELECT id FROM rooms WHERE id=$1`, [roomId]);
+  if (room.rowCount === 0) return res.status(404).json({ error: "room_not_found" });
+
+  if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (!(await assertRoomMember(roomId, me, res))) return;
+
+  const { rows } = await pool.query(
+    `SELECT c.id AS channel_id, MAX(m.created_at) AS last_message_at
+     FROM channels c
+     LEFT JOIN messages m ON m.channel_id = c.id
+     WHERE c.room_id=$1
+     GROUP BY c.id`,
+    [roomId]
+  );
+
+  res.json(
+    rows.map((r) => ({
+      channelId: String(r.channel_id),
+      lastMessageAt: r.last_message_at ? String(r.last_message_at) : null,
+    }))
+  );
+});
+
+// list messages
+app.get("/channels/:channelId/messages", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const channelId = req.params.channelId;
+
+  const ch = await pool.query(`SELECT id, room_id FROM channels WHERE id=$1`, [channelId]);
+  if (ch.rowCount === 0) return res.status(404).json({ error: "channel_not_found" });
+  const roomId = String(ch.rows?.[0]?.room_id || "");
+  if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+
+  const limitRaw = req.query.limit;
+  const limit = Math.min(200, Math.max(1, Number(limitRaw ?? 50) || 50));
+  const beforeRaw = req.query.before;
+  const before = typeof beforeRaw === "string" && beforeRaw.trim() ? beforeRaw.trim() : null;
+  if (before) {
+    const t = Date.parse(before);
+    if (!Number.isFinite(t)) return res.status(400).json({ error: "before_invalid" });
+  }
+
+  const viewer = authedUserId(req);
+
+  const { rows: rawRows } = await pool.query(
+    `SELECT m.id, m.channel_id
+            , COALESCE(m.author_id, m.author) AS author_id
+            , COALESCE(m.author_name, m.author) AS author_name
+            , m.author
+            , m.content, m.created_at, m.edited_at
+            , m.reply_to
+            , (u.avatar_data IS NOT NULL) AS author_has_avatar
+            , EXISTS (
+                SELECT 1
+                FROM room_bans b
+                WHERE b.room_id = $3
+                  AND b.user_id = COALESCE(m.author_id, m.author)
+              ) AS author_is_banned
+     FROM messages m
+     LEFT JOIN users u ON u.id = COALESCE(m.author_id, m.author)
+     WHERE m.channel_id=$1
+       AND ($4::timestamptz IS NULL OR m.created_at < $4::timestamptz)
+     ORDER BY m.created_at DESC
+     LIMIT $2 + 1`,
+    [channelId, limit, roomId, before]
+  );
+
+  const hasMore = rawRows.length > limit;
+  const rows = (hasMore ? rawRows.slice(0, limit) : rawRows).reverse();
+
+  const messageIds = rows.map((r) => r.id);
+  const replyIds = rows.map((r) => r.reply_to).filter(Boolean);
+
+  const repliesById: Record<string, { id: string; author: string; content: string }> = {};
+  if (replyIds.length > 0) {
+    const replyRows = await pool.query(
+      `SELECT id, COALESCE(author_name, author) AS author, content
+       FROM messages
+       WHERE id = ANY($1::text[])`,
+      [replyIds]
+    );
+    for (const r of replyRows.rows) {
+      repliesById[r.id] = { id: r.id, author: r.author, content: r.content };
+    }
+  }
+
+  const attachmentsByMessage: Record<string, Array<{ id: string; mime_type: string }>> = {};
+  if (messageIds.length > 0) {
+    const a = await pool.query(
+      `SELECT id, message_id, mime_type
+       FROM message_attachments
+       WHERE message_id = ANY($1::text[])
+       ORDER BY created_at ASC`,
+      [messageIds]
+    );
+    for (const row of a.rows) {
+      (attachmentsByMessage[row.message_id] ||= []).push({ id: row.id, mime_type: row.mime_type });
+    }
+  }
+
+  const reactionsByMessage: Record<
+    string,
+    Record<string, { emoji: string; count: number; byMe: boolean }>
+  > = {};
+  if (messageIds.length > 0) {
+    const r = await pool.query(
+      `SELECT message_id, emoji, author
+       FROM message_reactions
+       WHERE message_id = ANY($1::text[])`,
+      [messageIds]
+    );
+    for (const row of r.rows) {
+      const byEmoji = (reactionsByMessage[row.message_id] ||= {});
+      const item = (byEmoji[row.emoji] ||= { emoji: row.emoji, count: 0, byMe: false });
+      item.count += 1;
+      if (viewer && row.author === viewer) item.byMe = true;
+    }
+  }
+
+  res.json({
+    items: rows.map((m) => ({
+      id: m.id,
+      channel_id: m.channel_id,
+      author_id: m.author_id,
+      author: m.author_name,
+      author_has_avatar: !!m.author_has_avatar,
+      author_is_banned: !!m.author_is_banned,
+      content: m.content,
+      created_at: m.created_at,
+      edited_at: m.edited_at ?? null,
+      reply_to: m.reply_to ?? null,
+      reply: m.reply_to ? repliesById[m.reply_to] ?? null : null,
+      attachments: attachmentsByMessage[m.id] ?? [],
+      reactions: Object.values(reactionsByMessage[m.id] ?? {}),
+    })),
+    hasMore,
+  });
+});
+
+// create message
+app.post("/channels/:channelId/messages", requireAuth, async (req, res) => {
+  const channelId = String(req.params.channelId || "");
+  if (!channelId) return res.status(400).json({ error: "channelId_required" });
+
+  const ch = await pool.query(`SELECT id, room_id FROM channels WHERE id=$1`, [channelId]);
+  if (ch.rowCount === 0) return res.status(404).json({ error: "channel_not_found" });
+  const roomId = String(ch.rows?.[0]?.room_id || "");
+
+  const authorId = (req as any).userId as string;
+  if (roomId && !(await assertNotBannedFromRoom(roomId, authorId, res))) return;
+  if (roomId && !(await assertRoomMember(roomId, authorId, res))) return;
+  const u = await pool.query(`SELECT display_name FROM users WHERE id=$1`, [authorId]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+  const authorName = String(u.rows[0].display_name || authorId);
+
+  const replyTo = req.body?.replyTo;
+  if (replyTo != null && typeof replyTo !== "string") {
+    return res.status(400).json({ error: "replyTo_must_be_string_or_null" });
+  }
+
+  const attachmentsRaw = req.body?.attachments;
+  const attachments: Array<{ mime_type: string; data: Buffer }> = [];
+  if (attachmentsRaw != null) {
+    if (!Array.isArray(attachmentsRaw)) return res.status(400).json({ error: "attachments_must_be_array" });
+    if (attachmentsRaw.length > 1) return res.status(400).json({ error: "attachments_too_many" });
+    for (const a of attachmentsRaw) {
+      if (typeof a !== "object" || a == null) return res.status(400).json({ error: "attachment_invalid" });
+      const dataUrl = (a as any).dataUrl;
+      if (typeof dataUrl !== "string") return res.status(400).json({ error: "attachment_dataUrl_required" });
+      const parsed = parseDataUrlImage(dataUrl);
+      if (!parsed) return res.status(400).json({ error: "attachment_invalid_dataUrl" });
+      if (parsed.bytes.length > 2 * 1024 * 1024) return res.status(400).json({ error: "attachment_too_large" });
+      attachments.push({ mime_type: parsed.mime, data: parsed.bytes });
+    }
+  }
+
+  // content: 文字列自体は必須（型チェック）、ただし添付がある場合は空でもOK
+  if (typeof req.body?.content !== "string") {
+    return res.status(400).json({ error: "content_must_be_string" });
+  }
+  const content = String(req.body.content).trim();
+  if (attachments.length === 0) {
+    if (!content) return res.status(400).json({ error: "content_required" });
+  }
+  if (content.length > 2000) return res.status(400).json({ error: "content_too_long" });
+
+  const id = randomUUID();
+
+  await pool.query("BEGIN");
+  try {
+    if (typeof replyTo === "string") {
+      const parent = await pool.query(
+        `SELECT id FROM messages WHERE id=$1 AND channel_id=$2`,
+        [replyTo, channelId]
+      );
+      if (parent.rowCount === 0) {
+        await pool.query("ROLLBACK");
+        return res.status(404).json({ error: "replyTo_not_found" });
+      }
+    }
+
+    await pool.query(
+      `INSERT INTO messages (id, channel_id, author, author_id, author_name, content, reply_to)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, channelId, authorName, authorId, authorName, content, replyTo ?? null]
+    );
+
+    const attachmentMetas: Array<{ id: string; mime_type: string }> = [];
+    for (const a of attachments) {
+      const aid = randomUUID();
+      await pool.query(
+        `INSERT INTO message_attachments (id, message_id, mime_type, data)
+         VALUES ($1, $2, $3, $4)`,
+        [aid, id, a.mime_type, a.data]
+      );
+      attachmentMetas.push({ id: aid, mime_type: a.mime_type });
+    }
+
+    await pool.query("COMMIT");
+
+    let reply: any = null;
+    if (typeof replyTo === "string") {
+      const r = await pool.query(
+        `SELECT id, COALESCE(author_name, author) AS author, content FROM messages WHERE id=$1`,
+        [replyTo]
+      );
+      if ((r.rowCount ?? 0) > 0) reply = r.rows[0];
+    }
+
+    const avatar = await pool.query(`SELECT avatar_data IS NOT NULL AS has FROM users WHERE id=$1`, [authorId]);
+    const authorHasAvatar = !!avatar.rows?.[0]?.has;
+
+    const payload = {
+      id,
+      channel_id: channelId,
+      author_id: authorId,
+      author: authorName,
+      author_has_avatar: authorHasAvatar,
+      content,
+      created_at: new Date().toISOString(),
+      edited_at: null,
+      reply_to: replyTo ?? null,
+      reply,
+      attachments: attachmentMetas,
+      reactions: [],
+    };
+
+    // realtime: broadcast to subscribers of this channel
+    wsBroadcastChannel(channelId, { type: "channel_message_created", channelId, message: payload });
+
+    res.status(201).json(payload);
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    throw e;
+  }
+});
+
+// get attachment binary
+app.get("/attachments/:attachmentId", async (req, res) => {
+  const me = authedUserIdWithQueryToken(req);
+  if (!me) return res.status(401).json({ error: "auth_required" });
+  const attachmentId = req.params.attachmentId;
+  const a = await pool.query(
+    `SELECT a.id, a.mime_type, a.data, c.room_id
+     FROM message_attachments a
+     JOIN messages m ON m.id = a.message_id
+     JOIN channels c ON c.id = m.channel_id
+     WHERE a.id=$1`,
+    [attachmentId]
+  );
+  if (a.rowCount === 0) return res.status(404).json({ error: "attachment_not_found" });
+  const roomId = String(a.rows?.[0]?.room_id || "");
+  if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+  res.setHeader("content-type", a.rows[0].mime_type);
+  res.send(a.rows[0].data);
+});
+
+// toggle reaction
+app.post("/messages/:messageId/reactions/toggle", requireAuth, async (req, res) => {
+  const messageId = req.params.messageId;
+
+  const author = (req as any).userId as string;
+
+  const msg = await pool.query(
+    `SELECT m.id, m.channel_id, c.room_id
+     FROM messages m
+     JOIN channels c ON c.id = m.channel_id
+     WHERE m.id=$1`,
+    [messageId]
+  );
+  if (msg.rowCount === 0) return res.status(404).json({ error: "message_not_found" });
+  const channelId = String(msg.rows?.[0]?.channel_id || "");
+  const roomId = String(msg.rows?.[0]?.room_id || "");
+  if (roomId && !(await assertNotBannedFromRoom(roomId, author, res))) return;
+  if (roomId && !(await assertRoomMember(roomId, author, res))) return;
+
+  const emojiErr = validateEmoji(req.body?.emoji);
+  if (emojiErr) return res.status(400).json({ error: emojiErr });
+
+  const emoji = String(req.body.emoji).trim();
+
+  const existing = await pool.query(
+    `SELECT id FROM message_reactions WHERE message_id=$1 AND author=$2 AND emoji=$3`,
+    [messageId, author, emoji]
+  );
+
+  if ((existing.rowCount ?? 0) > 0) {
+    await pool.query(
+      `DELETE FROM message_reactions WHERE message_id=$1 AND author=$2 AND emoji=$3`,
+      [messageId, author, emoji]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO message_reactions (id, message_id, author, emoji)
+       VALUES ($1, $2, $3, $4)`,
+      [randomUUID(), messageId, author, emoji]
+    );
+  }
+
+  const r = await pool.query(
+    `SELECT emoji, author FROM message_reactions WHERE message_id=$1`,
+    [messageId]
+  );
+  const byEmoji: Record<string, { emoji: string; count: number; byMe: boolean }> = {};
+  for (const row of r.rows) {
+    const item = (byEmoji[row.emoji] ||= { emoji: row.emoji, count: 0, byMe: false });
+    item.count += 1;
+    if (row.author === author) item.byMe = true;
+  }
+
+  if (channelId) {
+    wsBroadcastChannel(channelId, {
+      type: "message_reactions_updated",
+      channelId,
+      messageId,
+      reactions: Object.values(byEmoji),
+    });
+  }
+
+  res.json({ messageId, reactions: Object.values(byEmoji) });
+});
+
+// edit message (author or room owner)
+app.patch("/messages/:messageId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const messageId = String(req.params.messageId || "");
+  if (!messageId) return res.status(400).json({ error: "messageId_required" });
+
+  if (typeof req.body?.content !== "string") return res.status(400).json({ error: "content_must_be_string" });
+  const content = String(req.body.content).trim();
+  if (!content) return res.status(400).json({ error: "content_required" });
+  if (content.length > 2000) return res.status(400).json({ error: "content_too_long" });
+
+  const msg = await pool.query(
+    `SELECT m.id, m.channel_id, c.room_id
+            , COALESCE(m.author_id, m.author) AS author_id
+            , r.owner_id
+     FROM messages m
+     JOIN channels c ON c.id = m.channel_id
+     JOIN rooms r ON r.id = c.room_id
+     WHERE m.id=$1`,
+    [messageId]
+  );
+  if (msg.rowCount === 0) return res.status(404).json({ error: "message_not_found" });
+
+  const channelId = String(msg.rows?.[0]?.channel_id || "");
+  const roomId = String(msg.rows?.[0]?.room_id || "");
+  const authorId = String(msg.rows?.[0]?.author_id || "");
+  const ownerId = msg.rows?.[0]?.owner_id ? String(msg.rows[0].owner_id) : null;
+
+  if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+
+  const canEdit = me === authorId || (ownerId && ownerId === me);
+  if (!canEdit) return res.status(403).json({ error: "forbidden" });
+
+  const upd = await pool.query(
+    `UPDATE messages SET content=$2, edited_at=now() WHERE id=$1 RETURNING edited_at`,
+    [messageId, content]
+  );
+  const editedAt = upd.rows?.[0]?.edited_at ?? null;
+
+  wsBroadcastChannel(channelId, { type: "channel_message_updated", channelId, messageId, content, edited_at: editedAt });
+  res.json({ ok: true, messageId, content, edited_at: editedAt });
+});
+
+// delete message (author or room owner)
+app.delete("/messages/:messageId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const messageId = String(req.params.messageId || "");
+  if (!messageId) return res.status(400).json({ error: "messageId_required" });
+
+  const msg = await pool.query(
+    `SELECT m.id, m.channel_id, c.room_id
+            , COALESCE(m.author_id, m.author) AS author_id
+            , r.owner_id
+     FROM messages m
+     JOIN channels c ON c.id = m.channel_id
+     JOIN rooms r ON r.id = c.room_id
+     WHERE m.id=$1`,
+    [messageId]
+  );
+  if (msg.rowCount === 0) return res.status(404).json({ error: "message_not_found" });
+
+  const channelId = String(msg.rows?.[0]?.channel_id || "");
+  const roomId = String(msg.rows?.[0]?.room_id || "");
+  const authorId = String(msg.rows?.[0]?.author_id || "");
+  const ownerId = msg.rows?.[0]?.owner_id ? String(msg.rows[0].owner_id) : null;
+
+  if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
+  if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+
+  const canDelete = me === authorId || (ownerId && ownerId === me);
+  if (!canDelete) return res.status(403).json({ error: "forbidden" });
+
+  await pool.query(`DELETE FROM messages WHERE id=$1`, [messageId]);
+  if (roomId && channelId) {
+    wsBroadcastChannel(channelId, { type: "channel_message_deleted", channelId, messageId });
+  }
+  res.json({ ok: true });
+});
+
+// create category
+app.post("/rooms/:roomId/categories", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const nameErr = validateName(req.body?.name, "name");
+  if (nameErr) return res.status(400).json({ error: nameErr });
+
+  const id = randomUUID();
+  const name = String(req.body.name).trim();
+  const position = Number.isFinite(Number(req.body?.position)) ? Number(req.body.position) : 0;
+
+  await pool.query(
+    `INSERT INTO categories (id, room_id, name, position) VALUES ($1, $2, $3, $4)`,
+    [id, roomId, name, position]
+  );
+
+  res.status(201).json({ id, room_id: roomId, name, position });
+});
+
+// delete category (also delete channels in the category)
+app.delete("/rooms/:roomId/categories/:categoryId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  const categoryId = req.params.categoryId;
+
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const cat = await pool.query(
+    `SELECT id FROM categories WHERE id=$1 AND room_id=$2`,
+    [categoryId, roomId]
+  );
+  if (cat.rowCount === 0) return res.status(404).json({ error: "category_not_found" });
+
+  await pool.query("BEGIN");
+  try {
+    // messages will cascade via channels -> messages
+    await pool.query(
+      `DELETE FROM channels WHERE room_id=$1 AND category_id=$2`,
+      [roomId, categoryId]
+    );
+    await pool.query(
+      `DELETE FROM categories WHERE id=$1 AND room_id=$2`,
+      [categoryId, roomId]
+    );
+    await pool.query("COMMIT");
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    throw e;
+  }
+
+  res.json({ ok: true });
+});
+
+// create channel
+app.post("/rooms/:roomId/channels", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const nameErr = validateName(req.body?.name, "name");
+  if (nameErr) return res.status(400).json({ error: nameErr });
+
+  const categoryId = req.body?.categoryId;
+  if (categoryId != null && typeof categoryId !== "string") {
+    return res.status(400).json({ error: "categoryId_must_be_string_or_null" });
+  }
+
+  if (typeof categoryId === "string") {
+    const cat = await pool.query(
+      `SELECT id FROM categories WHERE id=$1 AND room_id=$2`,
+      [categoryId, roomId]
+    );
+    if (cat.rowCount === 0) return res.status(404).json({ error: "category_not_found" });
+  }
+
+  const id = randomUUID();
+  const name = String(req.body.name).trim();
+  const position = Number.isFinite(Number(req.body?.position)) ? Number(req.body.position) : 0;
+
+  await pool.query(
+    `INSERT INTO channels (id, room_id, category_id, name, position) VALUES ($1, $2, $3, $4, $5)`,
+    [id, roomId, categoryId ?? null, name, position]
+  );
+
+  res.status(201).json({ id, room_id: roomId, category_id: categoryId ?? null, name, position });
+});
+
+// delete channel
+app.delete("/rooms/:roomId/channels/:channelId", requireAuth, async (req, res) => {
+  const me = (req as any).userId as string;
+  const roomId = String(req.params.roomId || "");
+  if (!roomId) return res.status(400).json({ error: "roomId_required" });
+  const channelId = req.params.channelId;
+
+  if (!(await assertRoomOwner(roomId, me, res))) return;
+
+  const ch = await pool.query(
+    `SELECT id FROM channels WHERE id=$1 AND room_id=$2`,
+    [channelId, roomId]
+  );
+  if (ch.rowCount === 0) return res.status(404).json({ error: "channel_not_found" });
+
+  await pool.query(`DELETE FROM channels WHERE id=$1 AND room_id=$2`, [channelId, roomId]);
+  res.json({ ok: true });
+});
+
+const port = Number(process.env.PORT ?? 3000);
+
+async function main() {
+  await initDb();
+  const server = createServer(app);
+  setupWebSocket(server);
+  server.listen(port, "::", () => {
+    console.log(`YuiRoom backend listening on [::]:${port}`);
+  });
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

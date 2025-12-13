@@ -1,0 +1,242 @@
+:root {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #36393f;
+  color: #dcddde;
+  overflow: hidden; /* アプリ全体のスクロールを防ぐ */
+}
+
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 16px;
+  padding: 18px;
+}
+
+.app.authed {
+  padding: 0;
+  gap: 0;
+  display: block;
+  height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.topbar.authTopbar {
+  justify-content: center;
+}
+
+.topbar.authTopbar .brand {
+  justify-content: center;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #6e7dff, #a37dff);
+  color: #0b1020;
+  font-weight: 900;
+}
+
+.title { font-size: 18px; font-weight: 800; }
+.subtitle { font-size: 12px; opacity: 0.75; margin-top: 2px; }
+
+.seg {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  padding: 4px;
+  display: flex;
+  gap: 4px;
+}
+
+.segBtn {
+  border: 0;
+  background: transparent;
+  color: #e8ecff;
+  padding: 10px 16px;
+  border-radius: 12px;
+  cursor: pointer;
+  opacity: 0.65;
+  transition:
+    background 120ms ease,
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    opacity 120ms ease;
+}
+
+.segBtn:hover {
+  opacity: 0.9;
+}
+
+.segBtn.active {
+  opacity: 1;
+  background: linear-gradient(135deg, #6e7dff, #a37dff);
+  color: #0b1020;
+  transform: scale(1.06); /* ぷに */
+  box-shadow:
+    0 6px 18px rgba(110,125,255,0.45),
+    inset 0 -2px 0 rgba(0,0,0,0.15);
+}
+
+.segBtn:active {
+  transform: scale(0.98); /* 押した瞬間 */
+}
+
+.segBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.card {
+  width: min(560px, 100%);
+  margin: 0 auto;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 20px;
+  padding: 18px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+  min-height: 520px;
+}
+
+h1 { margin: 0 0 6px; font-size: 22px; }
+.desc { margin: 0 0 16px; opacity: 0.82; font-size: 13px; line-height: 1.5; }
+
+.label { display: grid; gap: 6px; margin: 12px 0; font-size: 13px; }
+.input {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(0,0,0,0.25);
+  color: #e8ecff;
+  outline: none;
+}
+.input.bad { border-color: rgba(255, 84, 84, 0.75); }
+.hint { font-size: 12px; opacity: 0.75; }
+.badText { color: #ff7a7a; opacity: 1; }
+
+.primary {
+  width: 100%;
+  border: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  background: linear-gradient(135deg, #6e7dff, #a37dff);
+  color: #0b1020;
+  margin-top: 10px;
+}
+.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 10px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+.check input { margin-top: 2px; }
+
+.fine {
+  margin-top: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.toast {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.footer {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  opacity: 0.85;
+}
+
+.pill {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.06);
+}
+
+.cardTop {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+
+.seg.center {
+  background: rgba(255,255,255,0.10);
+}
+
+.panel {
+  animation: panelIn 160ms ease-out;
+}
+
+/* Scrollbar styling (MessageArea) */
+.messageList {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.16) rgba(0,0,0,0.20);
+}
+
+.messageList::-webkit-scrollbar {
+  width: 10px;
+}
+
+.messageList::-webkit-scrollbar-track {
+  background: rgba(0,0,0,0.20);
+}
+
+.messageList::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.16);
+  border-radius: 999px;
+  border: 2px solid rgba(0,0,0,0.20);
+}
+
+.messageList::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.24);
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

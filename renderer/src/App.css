@@ -206,27 +206,32 @@ h1 { margin: 0 0 6px; font-size: 22px; }
   animation: panelIn 160ms ease-out;
 }
 
-/* Scrollbar styling (MessageArea) */
-.messageList {
+/* Scrollbar styling (dark) */
+.messageList,
+.darkScroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.16) rgba(0,0,0,0.20);
 }
 
-.messageList::-webkit-scrollbar {
+.messageList::-webkit-scrollbar,
+.darkScroll::-webkit-scrollbar {
   width: 10px;
 }
 
-.messageList::-webkit-scrollbar-track {
+.messageList::-webkit-scrollbar-track,
+.darkScroll::-webkit-scrollbar-track {
   background: rgba(0,0,0,0.20);
 }
 
-.messageList::-webkit-scrollbar-thumb {
+.messageList::-webkit-scrollbar-thumb,
+.darkScroll::-webkit-scrollbar-thumb {
   background: rgba(255,255,255,0.16);
   border-radius: 999px;
   border: 2px solid rgba(0,0,0,0.20);
 }
 
-.messageList::-webkit-scrollbar-thumb:hover {
+.messageList::-webkit-scrollbar-thumb:hover,
+.darkScroll::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,0.24);
 }
 

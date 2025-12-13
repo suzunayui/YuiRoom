@@ -695,7 +695,7 @@ export function MessageArea({
                         padding: 0,
                         cursor: "pointer",
                       }}
-                      title={`${msg.author_id} をBAN`}
+                      title={msg.author_id}
                     >
                       {msg.author}
                     </button>

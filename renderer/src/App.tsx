@@ -1662,7 +1662,7 @@ export default function App() {
                 )}
               </div>
 
-              <div style={{ flex: 1, overflowY: "auto", padding: 10, display: "grid", gap: 14 }}>
+              <div className="darkScroll" style={{ flex: 1, overflowY: "auto", padding: 10, display: "grid", gap: 14 }}>
                 <div>
                   <div style={{ color: "#8e9297", fontSize: 12, fontWeight: 900, marginBottom: 8 }}>
                     フレンド
@@ -1979,7 +1979,7 @@ export default function App() {
                 {selectedDmPeerName ? `@ ${selectedDmPeerName}` : "フレンド未選択"}
               </div>
 
-              <div style={{ flex: 1, padding: "16px", overflowY: "auto" }}>
+              <div className="darkScroll" style={{ flex: 1, padding: "16px", overflowY: "auto" }}>
                 {dmLoading && <div style={{ opacity: 0.8, fontSize: 13 }}>読み込み中…</div>}
                 {dmError && <div style={{ color: "#ff7a7a", fontSize: 12, marginBottom: 10 }}>{dmError}</div>}
                 {!dmLoading && !dmError && selectedDmThreadId && dmMessages.length === 0 && (

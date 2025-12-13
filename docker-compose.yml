@@ -10,7 +10,8 @@ services:
         apk add --no-cache openssl >/dev/null;
         umask 077;
         if [ ! -s /secrets/postgres_password ]; then
-          openssl rand -base64 36 | tr -d "\n" > /secrets/postgres_password;
+          # Use hex to avoid URL-unsafe characters in connection strings.
+          openssl rand -hex 24 | tr -d "\n" > /secrets/postgres_password;
         fi
         if [ ! -s /secrets/auth_secret ]; then
           openssl rand -hex 48 | tr -d "\n" > /secrets/auth_secret;

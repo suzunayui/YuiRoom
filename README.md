@@ -21,6 +21,7 @@
 
 注意:
 - Postgres 18+ はボリュームを `/var/lib/postgresql` にマウントする前提です（このリポジトリの`docker-compose.yml`は対応済み）。
+- `postgres_password` は接続文字列に埋め込むため、URL安全な文字（hex）で生成します。
 
 確認:
 - `docker compose ps`

@@ -5,6 +5,10 @@ type Props = {
   selectedChannelId: string | null;
   onSelectChannel: (id: string) => void;
   unreadByChannelId?: Record<string, boolean>;
+  notifications?: Array<{ id: string; kind: "dm" | "mention"; title: string; body: string; at: number }>;
+  onOpenNotification?: (id: string) => void;
+  onDismissNotification?: (id: string) => void;
+  onClearNotifications?: () => void;
   onRequestCreateCategory?: () => void;
   onOpenRoomSettings?: () => void;
   onRequestCreateChannel?: (categoryId: string | null) => void;
@@ -20,6 +24,10 @@ export function ChannelList({
   selectedChannelId,
   onSelectChannel,
   unreadByChannelId,
+  notifications,
+  onOpenNotification,
+  onDismissNotification,
+  onClearNotifications,
   onRequestCreateCategory,
   onOpenRoomSettings,
   onRequestCreateChannel,
@@ -301,6 +309,128 @@ export function ChannelList({
               })}
 
             </div>
+          </div>
+        )}
+      </div>
+
+      <div
+        style={{
+          borderTop: "1px solid #202225",
+          background: "#2b2d31",
+          padding: "10px 12px",
+          display: "grid",
+          gap: 8,
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <div style={{ color: "#b9bbbe", fontSize: 12, fontWeight: 900 }}>通知</div>
+          {onClearNotifications && (
+            <button
+              type="button"
+              onClick={onClearNotifications}
+              disabled={!notifications || notifications.length === 0}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: !notifications || notifications.length === 0 ? "#5f636a" : "#8e9297",
+                cursor: !notifications || notifications.length === 0 ? "default" : "pointer",
+                fontSize: 12,
+                fontWeight: 900,
+                padding: 0,
+              }}
+              title="通知をクリア"
+            >
+              クリア
+            </button>
+          )}
+        </div>
+
+        {!notifications || notifications.length === 0 ? (
+          <div style={{ color: "#8e9297", fontSize: 12 }}>なし</div>
+        ) : (
+          <div style={{ display: "grid", gap: 6, maxHeight: 160, overflowY: "auto" }}>
+            {notifications.slice(0, 6).map((n) => {
+              const t = new Date(n.at);
+              const time = Number.isNaN(t.getTime())
+                ? ""
+                : t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+              const badgeColor = n.kind === "dm" ? "#3ba55c" : "#faa61a";
+              const badgeText = n.kind === "dm" ? "DM" : "@";
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => onOpenNotification?.(n.id)}
+                  style={{
+                    width: "100%",
+                    textAlign: "left",
+                    border: "1px solid #202225",
+                    background: "#1f2124",
+                    color: "#dcddde",
+                    borderRadius: 10,
+                    padding: "8px 10px",
+                    cursor: "pointer",
+                    display: "grid",
+                    gap: 4,
+                  }}
+                  title={n.title}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        minWidth: 18,
+                        height: 18,
+                        padding: "0 6px",
+                        borderRadius: 999,
+                        background: badgeColor,
+                        color: "#111",
+                        fontSize: 11,
+                        fontWeight: 900,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {badgeText}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 900,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {n.title}
+                    </span>
+                    <span style={{ marginLeft: "auto", color: "#8e9297", fontSize: 11, flexShrink: 0 }}>
+                      {time}
+                    </span>
+                    {onDismissNotification && (
+                      <span
+                        role="button"
+                        aria-label="通知を消す"
+                        title="通知を消す"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onDismissNotification(n.id);
+                        }}
+                        style={{ color: "#8e9297", padding: "0 2px", cursor: "pointer", lineHeight: 1 }}
+                      >
+                        ×
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ color: "#b9bbbe", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {n.body}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         )}
       </div>

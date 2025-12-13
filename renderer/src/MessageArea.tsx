@@ -25,7 +25,13 @@ function formatTime(iso: string) {
   });
 }
 
-function AttachmentImage({ attachmentId }: { attachmentId: string }) {
+function AttachmentImage({
+  attachmentId,
+  onOpen,
+}: {
+  attachmentId: string;
+  onOpen?: (src: string) => void;
+}) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -89,17 +95,25 @@ function AttachmentImage({ attachmentId }: { attachmentId: string }) {
   }
 
   return (
-    <img
-      src={url}
-      alt="attachment"
-      loading="lazy"
-      style={{
-        maxWidth: 420,
-        width: "100%",
-        borderRadius: 8,
-        border: "1px solid #202225",
-      }}
-    />
+    <button
+      type="button"
+      onClick={() => onOpen?.(url)}
+      style={{ padding: 0, border: "none", background: "transparent", cursor: "pointer", textAlign: "left" }}
+      title="画像を拡大"
+    >
+      <img
+        src={url}
+        alt="attachment"
+        loading="lazy"
+        style={{
+          maxWidth: 420,
+          width: "100%",
+          borderRadius: 8,
+          border: "1px solid #202225",
+          display: "block",
+        }}
+      />
+    </button>
   );
 }
 
@@ -120,6 +134,7 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
   const [deleting, setDeleting] = useState(false);
   const [editFor, setEditFor] = useState<null | { id: string; text: string }>(null);
   const [editing, setEditing] = useState(false);
+  const [imageModalSrc, setImageModalSrc] = useState<string | null>(null);
 
   const reactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
 
@@ -151,6 +166,7 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
           setReactionPickerFor(null);
           setDeleteModalFor(null);
           setEditFor(null);
+          setImageModalSrc(null);
           shouldStickToBottomRef.current = true;
         }
       } catch (e: any) {
@@ -660,7 +676,7 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
                 {msg.attachments && msg.attachments.length > 0 && (
                   <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
                     {msg.attachments.map((a) => (
-                      <AttachmentImage key={a.id} attachmentId={a.id} />
+                      <AttachmentImage key={a.id} attachmentId={a.id} onOpen={(src) => setImageModalSrc(src)} />
                     ))}
                   </div>
                 )}
@@ -1030,6 +1046,25 @@ export function MessageArea({ selectedChannelId, selectedChannelName, onAuthorCl
             >
               {deleteModalFor.content || "(本文なし)"}
             </div>
+          </div>
+        </Modal>
+      )}
+
+      {imageModalSrc && (
+        <Modal title="画像" onClose={() => setImageModalSrc(null)} maxWidth="min(1100px, 95vw)">
+          <div style={{ display: "grid", placeItems: "center" }}>
+            <img
+              src={imageModalSrc}
+              alt="full"
+              style={{
+                maxWidth: "90vw",
+                maxHeight: "80vh",
+                width: "auto",
+                height: "auto",
+                borderRadius: 12,
+                border: "1px solid #202225",
+              }}
+            />
           </div>
         </Modal>
       )}

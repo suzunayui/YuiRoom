@@ -18,6 +18,24 @@ type Mode = "login" | "register";
 type LoginForm = { userId: string };
 type RegisterForm = { userId: string; displayName: string };
 
+type NotificationItem =
+  | {
+      id: string;
+      kind: "mention";
+      title: string;
+      body: string;
+      at: number;
+      channelId: string;
+    }
+  | {
+      id: string;
+      kind: "dm";
+      title: string;
+      body: string;
+      at: number;
+      peer: { userId: string; displayName: string; hasAvatar: boolean };
+    };
+
 const USER_ID_REGEX = /^[a-z0-9_-]{3,32}$/;
 
 function normalizeUserId(v: string) {
@@ -135,6 +153,7 @@ export default function App() {
 
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   // 仮：ログイン状態（後でパスキーに差し替え）
   const [authed, setAuthed] = useState(false);
@@ -409,6 +428,14 @@ export default function App() {
       setToast(msg);
     }
 
+    function pushNotification(n: NotificationItem) {
+      setNotifications((prev) => {
+        if (prev.some((x) => x.id === n.id)) return prev;
+        const next = [n, ...prev];
+        return next.slice(0, 20);
+      });
+    }
+
     function isMentioned(content: unknown) {
       if (!currentUserId) return false;
       if (typeof content !== "string") return false;
@@ -438,7 +465,18 @@ export default function App() {
         const channelName = channelNameById.get(channelId) ?? "channel";
         const text = typeof content === "string" ? content.trim() : "";
         const snippet = text.length > 60 ? `${text.slice(0, 60)}…` : text;
-        maybeToast(`mention:${channelId}:${(msg as any).id ?? ""}`, `@メンション #${channelName} — ${author}: ${snippet}`);
+        const msgId = String((msg as any).id ?? "");
+        maybeToast(`mention:${channelId}:${msgId}`, `@メンション #${channelName} — ${author}: ${snippet}`);
+        if (msgId) {
+          pushNotification({
+            id: `mention:${roomId}:${channelId}:${msgId}`,
+            kind: "mention",
+            title: `@メンション #${channelName}`,
+            body: `${author}: ${snippet || "(本文なし)"}`,
+            at: Date.now(),
+            channelId,
+          });
+        }
       })
     );
     return () => {
@@ -456,6 +494,14 @@ export default function App() {
       if (lastToastRef.current.key === key && now - lastToastRef.current.at < 1500) return;
       lastToastRef.current = { key, at: now };
       setToast(msg);
+    }
+
+    function pushNotification(n: NotificationItem) {
+      setNotifications((prev) => {
+        if (prev.some((x) => x.id === n.id)) return prev;
+        const next = [n, ...prev];
+        return next.slice(0, 20);
+      });
     }
 
     async function refreshDmToastSubscriptions() {
@@ -483,7 +529,18 @@ export default function App() {
             const author = String(msg?.author ?? t.displayName ?? "DM");
             const text = String(msg?.content ?? "").trim();
             const snippet = text.length > 60 ? `${text.slice(0, 60)}…` : text;
-            maybeToast(`dm:${threadId}:${String(msg?.id ?? "")}`, `DM — ${author}: ${snippet}`);
+            const msgId = String(msg?.id ?? "");
+            maybeToast(`dm:${threadId}:${msgId}`, `DM — ${author}: ${snippet}`);
+            if (msgId) {
+              pushNotification({
+                id: `dm:${threadId}:${msgId}`,
+                kind: "dm",
+                title: `DM — ${t.displayName}`,
+                body: `${author}: ${snippet || "(本文なし)"}`,
+                at: Date.now(),
+                peer: { userId: t.userId, displayName: t.displayName, hasAvatar: !!t.hasAvatar },
+              });
+            }
           });
           dmToastUnsubsRef.current.set(threadId, unsub);
         }
@@ -1729,6 +1786,24 @@ export default function App() {
               selectedChannelId={selectedChannelId}
               onSelectChannel={selectChannelAndMarkRead}
               unreadByChannelId={unreadByChannelId}
+              notifications={notifications}
+              onClearNotifications={() => setNotifications([])}
+              onDismissNotification={(id) => setNotifications((prev) => prev.filter((n) => n.id !== id))}
+              onOpenNotification={(id) => {
+                const n = notifications.find((x) => x.id === id);
+                if (!n) return;
+                setNotifications((prev) => prev.filter((x) => x.id !== id));
+                if (n.kind === "mention") {
+                  selectChannelAndMarkRead(n.channelId);
+                  return;
+                }
+                setSelectedRoomId(HOME_ID);
+                void openDmWith({
+                  userId: n.peer.userId,
+                  displayName: n.peer.displayName,
+                  hasAvatar: n.peer.hasAvatar,
+                });
+              }}
               onRequestCreateCategory={
                 treeLoading
                   ? undefined

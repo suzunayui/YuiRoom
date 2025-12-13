@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { ReactNode } from "react";
 
 type Props = {
@@ -5,9 +6,18 @@ type Props = {
   children: ReactNode;
   onClose: () => void;
   footer?: ReactNode;
+  maxWidth?: string;
 };
 
-export function Modal({ title, children, onClose, footer }: Props) {
+export function Modal({ title, children, onClose, footer, maxWidth }: Props) {
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
     <div
       role="dialog"
@@ -28,7 +38,7 @@ export function Modal({ title, children, onClose, footer }: Props) {
     >
       <div
         style={{
-          width: "min(520px, 100%)",
+          width: maxWidth ?? "min(520px, 100%)",
           background: "#2f3136",
           border: "1px solid #202225",
           borderRadius: 12,

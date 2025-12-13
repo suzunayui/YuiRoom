@@ -78,6 +78,47 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+async function fileToPngAvatarDataUrl(file: File, maxSizePx = 256): Promise<string> {
+  const src = await fileToDataUrl(file);
+
+  const img = new Image();
+  const loaded = new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Unsupported image format"));
+  });
+  img.src = src;
+  await loaded;
+
+  function toPng(max: number) {
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    if (!w || !h) throw new Error("Unsupported image format");
+    const scale = Math.min(1, max / Math.max(w, h));
+    const outW = Math.max(1, Math.round(w * scale));
+    const outH = Math.max(1, Math.round(h * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas not supported");
+    ctx.drawImage(img, 0, 0, outW, outH);
+    return canvas.toDataURL("image/png");
+  }
+
+  // Try to ensure the resulting dataUrl stays under backend limit (2MB).
+  let max = maxSizePx;
+  for (let i = 0; i < 4; i++) {
+    const dataUrl = toPng(max);
+    const comma = dataUrl.indexOf(",");
+    const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : "";
+    const approxBytes = Math.floor((b64.length * 3) / 4);
+    if (approxBytes <= 2 * 1024 * 1024) return dataUrl;
+    max = Math.max(64, Math.floor(max * 0.75));
+  }
+  throw new Error("avatar_too_large");
+}
+
 export default function App() {
   const [mode, setMode] = useState<Mode>("login");
 
@@ -986,7 +1027,14 @@ export default function App() {
       await api.setUserDisplayName(currentUserId, name);
       await api.setUserAvatar(currentUserId, nextAvatar ? nextAvatar : null);
     } catch (e: any) {
-      setSettingsError(e?.message ?? "設定の保存に失敗したよ");
+      const msg = e?.message ?? "failed";
+      if (msg === "avatar_invalid_dataUrl") {
+        setSettingsError("アイコン画像の形式が対応していません（PNG/JPEG/GIF/WebP）");
+      } else if (msg === "avatar_too_large") {
+        setSettingsError("アイコン画像が大きすぎます（2MB以下にしてください）");
+      } else {
+        setSettingsError(msg || "設定の保存に失敗したよ");
+      }
       return;
     }
     setSettingsOpen(false);
@@ -2218,17 +2266,16 @@ export default function App() {
                       const file = e.target.files?.[0];
                       if (!file) return;
                       if (!file.type.startsWith("image/")) return;
-                      // localStorageに保存する都合上、サイズは控えめに
-                      if (file.size > 2 * 1024 * 1024) {
-                        alert("画像が大きすぎます（2MB以下にしてください）");
-                        e.currentTarget.value = "";
-                        return;
-                      }
                       try {
-                        const dataUrl = await fileToDataUrl(file);
+                        const dataUrl = await fileToPngAvatarDataUrl(file, 256);
                         setSettingsAvatar(dataUrl);
-                      } catch {
-                        alert("画像の読み込みに失敗しました");
+                      } catch (err: any) {
+                        const msg = String(err?.message ?? "");
+                        if (msg === "avatar_too_large") {
+                          alert("アイコン画像が大きすぎます（2MB以下になるよう縮小してください）");
+                        } else {
+                          alert("対応していない画像形式です（PNG/JPEG/GIF/WebP）");
+                        }
                       }
                       e.currentTarget.value = "";
                     }}

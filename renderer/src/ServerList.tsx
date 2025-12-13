@@ -28,7 +28,6 @@ export function ServerList({
       alignItems: "center",
       padding: "12px 0",
       height: "var(--app-height)",
-      minHeight: "100vh",
       overflowY: "auto"
     }}>
       {homeId && (

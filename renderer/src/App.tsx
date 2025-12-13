@@ -442,9 +442,11 @@ export default function App() {
         const h = Math.round((vv?.height ?? window.innerHeight) || window.innerHeight);
         const top = Math.round(vv?.offsetTop ?? 0);
         const left = Math.round(vv?.offsetLeft ?? 0);
+        const occludedBottom = Math.max(0, Math.round(window.innerHeight - (vv?.height ?? window.innerHeight) - (vv?.offsetTop ?? 0)));
         document.documentElement.style.setProperty("--app-height", `${h}px`);
         document.documentElement.style.setProperty("--app-offset-top", `${top}px`);
         document.documentElement.style.setProperty("--app-offset-left", `${left}px`);
+        document.documentElement.style.setProperty("--app-occluded-bottom", `${occludedBottom}px`);
       });
     }
 
@@ -1880,10 +1882,11 @@ export default function App() {
             top: "var(--app-offset-top)",
             left: "var(--app-offset-left)",
             height: "var(--app-height)",
-            minHeight: "100vh",
             width: "calc(100vw - var(--app-offset-left))",
             background: "#36393f",
             overflowX: "hidden",
+            paddingBottom: "var(--app-occluded-bottom)",
+            boxSizing: "border-box",
           }}
         >
           {!isNarrow && rooms && (
@@ -1904,7 +1907,6 @@ export default function App() {
                 background: "#2f3136",
                 borderRight: "1px solid #202225",
                 height: "var(--app-height)",
-                minHeight: "100vh",
                 display: "flex",
                 flexDirection: "column",
               }}
@@ -2246,7 +2248,6 @@ export default function App() {
                 display: "flex",
                 flexDirection: "column",
                 height: "var(--app-height)",
-                minHeight: "100vh",
               }}
             >
               <div
@@ -2441,7 +2442,7 @@ export default function App() {
               <div
                 style={{
                   padding: "12px 16px",
-                  paddingBottom: "calc(12px + env(safe-area-inset-bottom))",
+                  paddingBottom: "calc(12px + env(safe-area-inset-bottom) + var(--app-occluded-bottom))",
                   borderTop: "1px solid #202225",
                 }}
               >
@@ -2625,7 +2626,7 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div style={{ display: "flex", flex: 1, height: "var(--app-height)", minHeight: "100vh" }}>
+            <div style={{ display: "flex", flex: 1, height: "var(--app-height)" }}>
               <MessageArea
                 roomId={tree?.room?.id ?? null}
                 selectedChannelId={selectedChannelId}

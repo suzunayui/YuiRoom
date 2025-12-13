@@ -11,6 +11,8 @@ type Props = {
   currentUserId?: string | null;
   canModerate?: boolean;
   mentionCandidates?: Array<{ userId: string; displayName: string }>;
+  focusMessageId?: string | null;
+  focusMessageNonce?: number;
 };
 
 function formatTime(iso: string) {
@@ -125,6 +127,8 @@ export function MessageArea({
   currentUserId,
   canModerate,
   mentionCandidates,
+  focusMessageId,
+  focusMessageNonce,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -146,6 +150,7 @@ export function MessageArea({
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
 
   const reactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
 
@@ -155,6 +160,13 @@ export function MessageArea({
   const mentionRangeRef = useRef<{ start: number; end: number } | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const lastChannelIdRef = useRef<string | null>(null);
+  const pendingFocusRef = useRef<null | { id: string; startedAt: number; nonce: number }>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const focusRunRef = useRef(0);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -184,6 +196,8 @@ export function MessageArea({
           setMentionQuery("");
           setMentionIndex(0);
           mentionRangeRef.current = null;
+          setHighlightMessageId(null);
+          pendingFocusRef.current = null;
           shouldStickToBottomRef.current = true;
         }
       } catch (e: any) {
@@ -198,6 +212,14 @@ export function MessageArea({
       cancelled = true;
     };
   }, [selectedChannelId]);
+
+  useEffect(() => {
+    if (!selectedChannelId) return;
+    const id = focusMessageId ? String(focusMessageId) : "";
+    const nonce = focusMessageNonce ?? 0;
+    if (!id) return;
+    pendingFocusRef.current = { id, startedAt: Date.now(), nonce };
+  }, [selectedChannelId, focusMessageId, focusMessageNonce]);
 
   useEffect(() => {
     if (!selectedChannelId) return;
@@ -552,6 +574,73 @@ export function MessageArea({
     if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
+  useEffect(() => {
+    if (!selectedChannelId) return;
+    const pending = pendingFocusRef.current;
+    if (!pending) return;
+
+    const runId = ++focusRunRef.current;
+    const channelId = selectedChannelId;
+    const targetId = pending.id;
+
+    async function ensureVisible() {
+      // Fast path: already loaded
+      if (messagesRef.current.some((m) => m.id === targetId)) return;
+
+      // Auto load older messages until found (or exhausted)
+      for (let i = 0; i < 30; i++) {
+        if (focusRunRef.current !== runId) return;
+        const oldest = messagesRef.current[0];
+        if (!oldest) return;
+
+        const el = listRef.current;
+        const prevHeight = el?.scrollHeight ?? 0;
+        const prevTop = el?.scrollTop ?? 0;
+
+        let r: { items: Message[]; hasMore: boolean };
+        try {
+          r = await api.listMessagesBefore(channelId, oldest.created_at, 50);
+        } catch {
+          return;
+        }
+
+        if (focusRunRef.current !== runId) return;
+
+        setMessages((prev) => {
+          const existing = new Set(prev.map((m) => m.id));
+          const add = r.items.filter((m) => !existing.has(m.id));
+          const next = [...add, ...prev];
+          messagesRef.current = next;
+          return next;
+        });
+        setHasMore(!!r.hasMore);
+
+        // Keep viewport stable while prepending.
+        setTimeout(() => {
+          const el2 = listRef.current;
+          if (!el2) return;
+          const newHeight = el2.scrollHeight;
+          el2.scrollTop = prevTop + (newHeight - prevHeight);
+        }, 0);
+
+        if (messagesRef.current.some((m) => m.id === targetId)) return;
+        if (!r.hasMore || r.items.length === 0) return;
+      }
+    }
+
+    void (async () => {
+      await ensureVisible();
+      if (focusRunRef.current !== runId) return;
+      if (!messagesRef.current.some((m) => m.id === targetId)) return;
+      requestAnimationFrame(() => {
+        scrollToMessage(targetId);
+        setHighlightMessageId(targetId);
+        setTimeout(() => setHighlightMessageId((prev) => (prev === targetId ? null : prev)), 2000);
+      });
+      pendingFocusRef.current = null;
+    })();
+  }, [selectedChannelId, focusMessageNonce]);
+
   return (
     <div style={{
       flex: 1,
@@ -622,7 +711,10 @@ export function MessageArea({
                 display: "flex",
                 alignItems: "flex-start",
                 gap: 12,
-                padding: "2px 0"
+                padding: "6px 8px",
+                borderRadius: 12,
+                background: highlightMessageId === msg.id ? "rgba(114,137,218,0.20)" : "transparent",
+                transition: "background 180ms ease",
               }}
             >
               <div

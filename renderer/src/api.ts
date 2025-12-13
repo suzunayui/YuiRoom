@@ -214,6 +214,11 @@ export type DmMessage = {
   created_at: string;
 };
 
+export type Page<T> = {
+  items: T[];
+  hasMore: boolean;
+};
+
 export const api = {
   base: apiBase,
   getAuthToken: () => authToken,
@@ -367,7 +372,13 @@ export const api = {
   listDmMessages: (threadId: string, limit?: number) => {
     const q = new URLSearchParams();
     q.set("limit", String(limit ?? 200));
-    return getJson<DmMessage[]>(`/dm/threads/${encodeURIComponent(threadId)}/messages?${q.toString()}`);
+    return getJson<Page<DmMessage>>(`/dm/threads/${encodeURIComponent(threadId)}/messages?${q.toString()}`);
+  },
+  listDmMessagesBefore: (threadId: string, beforeIso: string, limit?: number) => {
+    const q = new URLSearchParams();
+    q.set("limit", String(limit ?? 200));
+    q.set("before", beforeIso);
+    return getJson<Page<DmMessage>>(`/dm/threads/${encodeURIComponent(threadId)}/messages?${q.toString()}`);
   },
   sendDmMessage: (threadId: string, content: string) =>
     postJson<DmMessage>(`/dm/threads/${encodeURIComponent(threadId)}/messages`, { content }),

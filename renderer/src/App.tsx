@@ -26,6 +26,7 @@ type NotificationItem =
       body: string;
       at: number;
       channelId: string;
+      messageId: string;
     }
   | {
       id: string;
@@ -33,6 +34,8 @@ type NotificationItem =
       title: string;
       body: string;
       at: number;
+      threadId: string;
+      messageId: string;
       peer: { userId: string; displayName: string; hasAvatar: boolean };
     };
 
@@ -161,6 +164,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [focusMessage, setFocusMessage] = useState<null | { messageId: string; nonce: number }>(null);
+  const [focusDmMessage, setFocusDmMessage] = useState<null | { threadId: string; messageId: string; nonce: number }>(null);
   const [userAction, setUserAction] = useState<null | { userId: string; displayName: string; hasAvatar: boolean }>(null);
   const [userActionStatus, setUserActionStatus] = useState<UserActionStatus | null>(null);
   const [userActionBusy, setUserActionBusy] = useState(false);
@@ -201,11 +206,17 @@ export default function App() {
   const [selectedDmPeerUserId, setSelectedDmPeerUserId] = useState<string | null>(null);
   const [dmMessages, setDmMessages] = useState<DmMessage[]>([]);
   const [dmLoading, setDmLoading] = useState(false);
+  const [dmHasMore, setDmHasMore] = useState(false);
+  const [dmHighlightId, setDmHighlightId] = useState<string | null>(null);
   const [dmError, setDmError] = useState<string | null>(null);
   const [dmText, setDmText] = useState("");
   const [dmSending, setDmSending] = useState(false);
 
   const openDmSeqRef = useRef(0);
+  const dmListRef = useRef<HTMLDivElement | null>(null);
+  const dmMessagesRef = useRef<DmMessage[]>([]);
+  const dmFocusRunRef = useRef(0);
+  const dmLoadingMoreRef = useRef(false);
 
   const [createModal, setCreateModal] = useState<
     | null
@@ -486,6 +497,7 @@ export default function App() {
             body: `${author}: ${snippet || "(本文なし)"}`,
             at: Date.now(),
             channelId,
+            messageId: msgId,
           });
         }
       })
@@ -549,6 +561,8 @@ export default function App() {
                 title: `DM — ${t.displayName}`,
                 body: `${author}: ${snippet || "(本文なし)"}`,
                 at: Date.now(),
+                threadId,
+                messageId: msgId,
                 peer: { userId: t.userId, displayName: t.displayName, hasAvatar: !!t.hasAvatar },
               });
             }
@@ -751,6 +765,8 @@ export default function App() {
     if (!selectedDmThreadId) {
       setDmMessages([]);
       setDmError(null);
+      setDmHasMore(false);
+      setDmHighlightId(null);
       return;
     }
     const threadId = selectedDmThreadId;
@@ -759,8 +775,13 @@ export default function App() {
       setDmLoading(true);
       setDmError(null);
       try {
-        const list = await api.listDmMessages(threadId, 200);
-        if (!cancelled) setDmMessages(list);
+        const r = await api.listDmMessages(threadId, 200);
+        if (!cancelled) {
+          setDmMessages(r.items);
+          setDmHasMore(!!r.hasMore);
+          setDmHighlightId(null);
+          dmMessagesRef.current = r.items;
+        }
       } catch (e: any) {
         if (cancelled) return;
         const msg = e?.message ?? "failed";
@@ -771,6 +792,8 @@ export default function App() {
           setDmMessages([]);
           setDmError(null);
           setDmLoading(false);
+          setDmHasMore(false);
+          setDmHighlightId(null);
           setDmText("");
           setToast("フレンドじゃないからDMできないよ");
           void loadHome();
@@ -788,6 +811,10 @@ export default function App() {
   }, [authed, selectedRoomId, selectedDmThreadId]);
 
   useEffect(() => {
+    dmMessagesRef.current = dmMessages;
+  }, [dmMessages]);
+
+  useEffect(() => {
     if (!selectedDmThreadId) return;
     const threadId = selectedDmThreadId;
     const unsub = realtime.subscribeDmMessage(threadId, (msg: DmMessage) => {
@@ -795,6 +822,73 @@ export default function App() {
     });
     return unsub;
   }, [selectedDmThreadId]);
+
+  useEffect(() => {
+    if (!focusDmMessage) return;
+    if (!selectedDmThreadId) return;
+    const threadId = selectedDmThreadId;
+    if (threadId !== focusDmMessage.threadId) return;
+
+    const runId = ++dmFocusRunRef.current;
+    const targetId = focusDmMessage.messageId;
+
+    async function ensureVisible() {
+      if (dmMessagesRef.current.some((m) => m.id === targetId)) return;
+
+      for (let i = 0; i < 30; i++) {
+        if (dmFocusRunRef.current !== runId) return;
+        const oldest = dmMessagesRef.current[0];
+        if (!oldest) return;
+        if (!dmHasMore) return;
+        if (dmLoadingMoreRef.current) return;
+
+        dmLoadingMoreRef.current = true;
+        const el = dmListRef.current;
+        const prevHeight = el?.scrollHeight ?? 0;
+        const prevTop = el?.scrollTop ?? 0;
+
+        try {
+          const r = await api.listDmMessagesBefore(threadId, oldest.created_at, 200);
+          if (dmFocusRunRef.current !== runId) return;
+
+          setDmMessages((prev) => {
+            const existing = new Set(prev.map((m) => m.id));
+            const add = r.items.filter((m) => !existing.has(m.id));
+            const next = [...add, ...prev];
+            dmMessagesRef.current = next;
+            return next;
+          });
+          setDmHasMore(!!r.hasMore);
+
+          setTimeout(() => {
+            const el2 = dmListRef.current;
+            if (!el2) return;
+            const newHeight = el2.scrollHeight;
+            el2.scrollTop = prevTop + (newHeight - prevHeight);
+          }, 0);
+
+          if (dmMessagesRef.current.some((m) => m.id === targetId)) return;
+          if (!r.hasMore || r.items.length === 0) return;
+        } catch {
+          return;
+        } finally {
+          dmLoadingMoreRef.current = false;
+        }
+      }
+    }
+
+    void (async () => {
+      await ensureVisible();
+      if (dmFocusRunRef.current !== runId) return;
+      if (!dmMessagesRef.current.some((m) => m.id === targetId)) return;
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`dm_msg_${targetId}`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setDmHighlightId(targetId);
+        setTimeout(() => setDmHighlightId((prev) => (prev === targetId ? null : prev)), 2000);
+      });
+    })();
+  }, [focusDmMessage?.nonce, selectedDmThreadId, dmHasMore, dmMessages.length]);
 
   useEffect(() => {
     if (!selectedDmThreadId) return;
@@ -807,6 +901,8 @@ export default function App() {
       setDmMessages([]);
       setDmError(null);
       setDmLoading(false);
+      setDmHasMore(false);
+      setDmHighlightId(null);
       setDmText("");
       setToast("フレンドじゃないからDMできないよ");
       void loadHome();
@@ -822,6 +918,8 @@ export default function App() {
     setSelectedDmThreadId(null);
     setDmMessages([]);
     setDmError(null);
+    setDmHasMore(false);
+    setDmHighlightId(null);
     setDmLoading(true);
     try {
       const r = await api.openDmThread(friend.userId);
@@ -837,6 +935,8 @@ export default function App() {
         setSelectedDmThreadId(null);
         setDmMessages([]);
         setDmError(null);
+        setDmHasMore(false);
+        setDmHighlightId(null);
         setDmText("");
         setToast("フレンドじゃないからDMできないよ");
         void loadHome();
@@ -1912,10 +2012,16 @@ export default function App() {
                 if (!n) return;
                 setNotifications((prev) => prev.filter((x) => x.id !== id));
                 if (n.kind === "mention") {
+                  setFocusMessage((prev) => ({ messageId: n.messageId, nonce: (prev?.nonce ?? 0) + 1 }));
                   selectChannelAndMarkRead(n.channelId);
                   return;
                 }
                 setSelectedRoomId(HOME_ID);
+                setFocusDmMessage((prev) => ({
+                  threadId: n.threadId,
+                  messageId: n.messageId,
+                  nonce: (prev?.nonce ?? 0) + 1,
+                }));
                 void openDmWith({
                   userId: n.peer.userId,
                   displayName: n.peer.displayName,
@@ -1979,7 +2085,7 @@ export default function App() {
                 {selectedDmPeerName ? `@ ${selectedDmPeerName}` : "フレンド未選択"}
               </div>
 
-              <div className="darkScroll" style={{ flex: 1, padding: "16px", overflowY: "auto" }}>
+              <div ref={dmListRef} className="darkScroll" style={{ flex: 1, padding: "16px", overflowY: "auto" }}>
                 {dmLoading && <div style={{ opacity: 0.8, fontSize: 13 }}>読み込み中…</div>}
                 {dmError && <div style={{ color: "#ff7a7a", fontSize: 12, marginBottom: 10 }}>{dmError}</div>}
                 {!dmLoading && !dmError && selectedDmThreadId && dmMessages.length === 0 && (
@@ -1989,12 +2095,16 @@ export default function App() {
                 {dmMessages.map((msg) => (
                   <div
                     key={msg.id}
+                    id={`dm_msg_${msg.id}`}
                     style={{
                       marginBottom: 16,
                       display: "flex",
                       alignItems: "flex-start",
                       gap: 12,
-                      padding: "2px 0",
+                      padding: "6px 8px",
+                      borderRadius: 12,
+                      background: dmHighlightId === msg.id ? "rgba(114,137,218,0.20)" : "transparent",
+                      transition: "background 180ms ease",
                     }}
                   >
                     <div
@@ -2098,6 +2208,8 @@ export default function App() {
                 currentUserId={currentUserId}
                 canModerate={!!(tree?.room.owner_id && currentUserId && tree.room.owner_id === currentUserId)}
                 mentionCandidates={memberPane.map((m) => ({ userId: m.userId, displayName: m.displayName }))}
+                focusMessageId={focusMessage?.messageId ?? null}
+                focusMessageNonce={focusMessage?.nonce ?? 0}
               />
               <MemberPane
                 members={memberPane}
@@ -3188,7 +3300,10 @@ export default function App() {
                 {auditLogs.length === 0 ? (
                   <div style={{ fontSize: 12, opacity: 0.8 }}>なし</div>
                 ) : (
-                  <div style={{ display: "grid", gap: 6 }}>
+                  <div
+                    className="darkScroll"
+                    style={{ display: "grid", gap: 6, maxHeight: 320, overflowY: "auto", paddingRight: 2 }}
+                  >
                     {auditLogs.slice(0, 50).map((l) => (
                       <div
                         key={l.id}
@@ -3455,7 +3570,7 @@ export default function App() {
             ) : homeAuditLogs.length === 0 ? (
               <div style={{ color: "#8e9297", fontSize: 12 }}>なし</div>
             ) : (
-              <div style={{ display: "grid", gap: 6 }}>
+              <div className="darkScroll" style={{ display: "grid", gap: 6, maxHeight: 420, overflowY: "auto", paddingRight: 2 }}>
                 {homeAuditLogs.slice(0, 50).map((l) => (
                   <div
                     key={l.id}

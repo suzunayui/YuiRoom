@@ -1182,26 +1182,43 @@ app.get("/dm/threads/:threadId/messages", requireAuth, async (req, res) => {
   const limitRaw = req.query.limit;
   const limit = Math.min(200, Math.max(1, Number(limitRaw ?? 50) || 50));
 
+  const before = typeof req.query.before === "string" ? req.query.before : null;
+
+  const params: any[] = [threadId];
+  let where = `m.thread_id=$1`;
+  if (before && before.trim()) {
+    params.push(before.trim());
+    where += ` AND m.created_at < $${params.length}`;
+  }
+  params.push(limit + 1);
+
   const { rows } = await pool.query(
     `SELECT m.id, m.thread_id, m.author_id, u.display_name AS author_name,
             (u.avatar_data IS NOT NULL) AS author_has_avatar,
             m.content, m.created_at
      FROM dm_messages m
      JOIN users u ON u.id = m.author_id
-     WHERE m.thread_id=$1
-     ORDER BY m.created_at ASC
-     LIMIT $2`,
-    [threadId, limit]
+     WHERE ${where}
+     ORDER BY m.created_at DESC
+     LIMIT $${params.length}`,
+    params
   );
-  res.json(rows.map((r) => ({
-    id: r.id,
-    thread_id: r.thread_id,
-    author_id: r.author_id,
-    author: r.author_name,
-    author_has_avatar: !!r.author_has_avatar,
-    content: r.content,
-    created_at: r.created_at,
-  })));
+
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit).reverse(); // oldest -> newest
+
+  res.json({
+    items: page.map((r) => ({
+      id: r.id,
+      thread_id: r.thread_id,
+      author_id: r.author_id,
+      author: r.author_name,
+      author_has_avatar: !!r.author_has_avatar,
+      content: r.content,
+      created_at: r.created_at,
+    })),
+    hasMore,
+  });
 });
 
 // send dm message

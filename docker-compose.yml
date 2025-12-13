@@ -17,6 +17,8 @@ services:
         fi
         pw="$(cat /secrets/postgres_password)";
         echo "postgres://yuiroom:${pw}@postgres:5432/yuiroom" > /secrets/database_url;
+        # Make sure containers can read these files even when not running as root.
+        chmod 0644 /secrets/postgres_password /secrets/auth_secret /secrets/database_url;
       '
 
   postgres:

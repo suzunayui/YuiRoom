@@ -17,6 +17,7 @@ services:
         fi
         pw="$(cat /secrets/postgres_password)";
         echo "postgres://yuiroom:${pw}@postgres:5432/yuiroom" > /secrets/database_url;
+        chmod 0644 /secrets/postgres_password /secrets/auth_secret /secrets/database_url;
       '
 
   postgres:

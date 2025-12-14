@@ -1121,7 +1121,8 @@ app.post(
     if (typeof dataUrl !== "string") return res.status(400).json({ error: "sticker_dataUrl_required" });
     const parsed = parseDataUrlImage(String(dataUrl));
     if (!parsed) return res.status(400).json({ error: "sticker_invalid_dataUrl" });
-    if (parsed.bytes.length > 600_000) return res.status(400).json({ error: "sticker_too_large" });
+    // Keep stickers reasonably small, but allow animated GIFs too.
+    if (parsed.bytes.length > 2_000_000) return res.status(400).json({ error: "sticker_too_large" });
 
     const nameRaw = typeof req.body?.name === "string" ? String(req.body.name) : "";
     const name = nameRaw.trim().slice(0, 32);

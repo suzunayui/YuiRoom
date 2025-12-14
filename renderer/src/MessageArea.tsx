@@ -4,8 +4,7 @@ import type { Message, Poll, RoomSearchMessage } from "./api";
 import { realtime } from "./realtime";
 import { Modal } from "./Modal";
 import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "./linkify";
-import { EmojiPickerModal } from "./modals/EmojiPickerModal";
-import { StickerPickerModal } from "./modals/StickerPickerModal";
+import { ReactionPickerModal } from "./modals/ReactionPickerModal";
 import { parseStickerIdFromReaction, StickerImg } from "./stickers";
 
 type Props = {
@@ -291,7 +290,6 @@ export function MessageArea({
   const [replyTo, setReplyTo] = useState<null | { id: string; author: string; content: string }>(null);
   const [pendingAttachment, setPendingAttachment] = useState<null | { dataUrl: string; mime: string }>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
-  const [stickerPickerFor, setStickerPickerFor] = useState<string | null>(null);
   const [deleteModalFor, setDeleteModalFor] = useState<null | { id: string; author: string; content: string }>(null);
   const [deleting, setDeleting] = useState(false);
   const [editFor, setEditFor] = useState<null | { id: string; text: string }>(null);
@@ -354,7 +352,6 @@ export function MessageArea({
           setReplyTo(null);
           setPendingAttachment(null);
           setReactionPickerFor(null);
-          setStickerPickerFor(null);
           setDeleteModalFor(null);
           setEditFor(null);
           setImageModalSrc(null);
@@ -1384,21 +1381,6 @@ export function MessageArea({
                     リアクション
                   </button>
 
-                  <button
-                    onClick={() => setStickerPickerFor((prev) => (prev === msg.id ? null : msg.id))}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      color: "#8e9297",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      padding: 0,
-                    }}
-                    title="スタンプを追加"
-                  >
-                    スタンプ
-                  </button>
-
                   {(currentUserId && !msg.poll && (msg.author_id === currentUserId || canModerate) && editFor?.id !== msg.id) && (
                     <button
                       onClick={() => openEdit(msg)}
@@ -1441,10 +1423,9 @@ export function MessageArea({
           ))}
       </div>
 
-      <EmojiPickerModal
+      <ReactionPickerModal
         open={!!reactionPickerFor}
         title="リアクション"
-        storageKey={`yuiroom.recentEmojis.channel:${currentUserId || "anon"}`}
         selected={
           reactionPickerFor
             ? new Set(
@@ -1453,18 +1434,13 @@ export function MessageArea({
             : undefined
         }
         onClose={() => setReactionPickerFor(null)}
-        onPick={(emoji) => {
+        onPickEmoji={(emoji) => {
           const id = reactionPickerFor;
           if (!id) return;
           void pickReaction(id, emoji);
         }}
-      />
-
-      <StickerPickerModal
-        open={!!stickerPickerFor}
-        onClose={() => setStickerPickerFor(null)}
-        onPick={(stickerId) => {
-          const id = stickerPickerFor;
+        onPickSticker={(stickerId) => {
+          const id = reactionPickerFor;
           if (!id) return;
           void pickReaction(id, `sticker:${stickerId}`);
         }}

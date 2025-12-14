@@ -1,10 +1,9 @@
-import { useEffect, useState, type RefObject } from "react";
+import type { RefObject } from "react";
 import { api } from "../api";
 import type { DmMessage, DmSearchMessage } from "../api";
 import { Modal } from "../Modal";
 import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "../linkify";
-import { EmojiPickerModal } from "../modals/EmojiPickerModal";
-import { StickerPickerModal } from "../modals/StickerPickerModal";
+import { ReactionPickerModal } from "../modals/ReactionPickerModal";
 import { parseStickerIdFromReaction, StickerImg } from "../stickers";
 
 type Props = {
@@ -72,12 +71,6 @@ export function DmPanel({
   dmSearchInputRef,
   onPickSearchResult,
 }: Props) {
-  const [dmStickerPickerFor, setDmStickerPickerFor] = useState<string | null>(null);
-
-  useEffect(() => {
-    setDmStickerPickerFor(null);
-  }, [selectedDmThreadId]);
-
   return (
     <div
       style={{
@@ -259,21 +252,6 @@ export function DmPanel({
                 >
                   リアクション
                 </button>
-
-                <button
-                  onClick={() => setDmStickerPickerFor((prev) => (prev === msg.id ? null : msg.id))}
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    color: "#8e9297",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    padding: 0,
-                  }}
-                  title="スタンプを追加"
-                >
-                  スタンプ
-                </button>
               </div>
 
             </div>
@@ -281,10 +259,9 @@ export function DmPanel({
         ))}
       </div>
 
-      <EmojiPickerModal
+      <ReactionPickerModal
         open={!!dmReactionPickerFor}
         title="リアクション"
-        storageKey={`yuiroom.recentEmojis.dm:${selectedDmThreadId || "none"}`}
         selected={
           dmReactionPickerFor
             ? new Set(
@@ -293,18 +270,13 @@ export function DmPanel({
             : undefined
         }
         onClose={() => setDmReactionPickerFor(() => null)}
-        onPick={(emoji) => {
+        onPickEmoji={(emoji) => {
           const id = dmReactionPickerFor;
           if (!id) return;
           void toggleDmReaction(id, emoji);
         }}
-      />
-
-      <StickerPickerModal
-        open={!!dmStickerPickerFor}
-        onClose={() => setDmStickerPickerFor(null)}
-        onPick={(stickerId) => {
-          const id = dmStickerPickerFor;
+        onPickSticker={(stickerId) => {
+          const id = dmReactionPickerFor;
           if (!id) return;
           void toggleDmReaction(id, `sticker:${stickerId}`);
         }}

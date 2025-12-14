@@ -90,6 +90,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const baseTitleRef = useRef<string>("");
   const [focusMessage, setFocusMessage] = useState<null | { messageId: string; nonce: number }>(null);
   const [focusDmMessage, setFocusDmMessage] = useState<null | { threadId: string; messageId: string; nonce: number }>(null);
   const [userAction, setUserAction] = useState<null | { userId: string; displayName: string; hasAvatar: boolean }>(null);
@@ -323,6 +324,38 @@ export default function App() {
       setMemberPaneLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!baseTitleRef.current) {
+      try {
+        baseTitleRef.current = document.title || "YuiRoom";
+      } catch {
+        baseTitleRef.current = "YuiRoom";
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    // Tab title badge for DM/mention notifications
+    const baseTitle = baseTitleRef.current || "YuiRoom";
+    const count = authed ? notifications.length : 0;
+    try {
+      document.title = count > 0 ? `(${count}) ${baseTitle}` : baseTitle;
+    } catch {
+      // ignore
+    }
+
+    try {
+      const nav: any = navigator as any;
+      if (typeof nav?.setAppBadge === "function") {
+        if (count > 0) nav.setAppBadge(count);
+        else if (typeof nav?.clearAppBadge === "function") nav.clearAppBadge();
+        else nav.setAppBadge(0);
+      }
+    } catch {
+      // ignore
+    }
+  }, [authed, notifications.length]);
 
   useEffect(() => {
     if (selectedRoomId && selectedRoomId !== HOME_ID) {

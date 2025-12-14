@@ -359,8 +359,6 @@ export default function App() {
     setJoinError(null);
   }, [authed]);
 
-  const dmReactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
-
   function openDmSearch() {
     if (!selectedDmThreadId) return;
     setDmSearchOpen(true);
@@ -417,11 +415,6 @@ export default function App() {
     } catch (e: any) {
       setToast(e?.message ?? "failed");
     }
-  }
-
-  async function pickDmReaction(messageId: string, emoji: string) {
-    setDmReactionPickerFor(null);
-    await toggleDmReaction(messageId, emoji);
   }
 
   useEffect(() => {
@@ -1767,11 +1760,9 @@ export default function App() {
           dmError={dmError}
           dmMessages={dmMessages}
           dmHighlightId={dmHighlightId}
-          dmReactionEmojis={dmReactionEmojis}
           dmReactionPickerFor={dmReactionPickerFor}
           setDmReactionPickerFor={setDmReactionPickerFor}
           toggleDmReaction={toggleDmReaction}
-          pickDmReaction={pickDmReaction}
           dmText={dmText}
           setDmText={setDmText}
           dmSending={dmSending}

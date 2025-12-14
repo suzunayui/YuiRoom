@@ -4,6 +4,7 @@ import type { Message, RoomSearchMessage } from "./api";
 import { realtime } from "./realtime";
 import { Modal } from "./Modal";
 import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "./linkify";
+import { EmojiPickerModal } from "./modals/EmojiPickerModal";
 
 type Props = {
   roomId?: string | null;
@@ -306,8 +307,6 @@ export function MessageArea({
   const [searchItems, setSearchItems] = useState<RoomSearchMessage[]>([]);
   const [searchHasMore, setSearchHasMore] = useState(false);
   const [searchBefore, setSearchBefore] = useState<string | null>(null);
-
-  const reactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -783,7 +782,6 @@ export function MessageArea({
 
   async function pickReaction(messageId: string, emoji: string) {
     await toggleReaction(messageId, emoji);
-    setReactionPickerFor(null);
   }
 
   function scrollToMessage(messageId: string) {
@@ -1243,48 +1241,29 @@ export function MessageArea({
                   )}
                 </div>
 
-                {reactionPickerFor === msg.id && (
-                  <div
-                    style={{
-                      marginTop: 8,
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: 8,
-                      padding: "10px 10px",
-                      borderRadius: 10,
-                      border: "1px solid #40444b",
-                      background: "#2f3136",
-                      maxWidth: 360,
-                    }}
-                  >
-                    {reactionEmojis.map((emoji) => (
-                      <button
-                        key={emoji}
-                        onClick={() => pickReaction(msg.id, emoji)}
-                        style={{
-                          width: 36,
-                          height: 32,
-                          borderRadius: 8,
-                          border: "1px solid #40444b",
-                          background: "transparent",
-                          color: "#dcddde",
-                          cursor: "pointer",
-                          fontSize: 16,
-                          display: "grid",
-                          placeItems: "center",
-                        }}
-                        title={emoji}
-                        aria-label={`リアクション ${emoji}`}
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
           ))}
       </div>
+
+      <EmojiPickerModal
+        open={!!reactionPickerFor}
+        title="リアクション"
+        storageKey={`yuiroom.recentEmojis.channel:${currentUserId || "anon"}`}
+        selected={
+          reactionPickerFor
+            ? new Set(
+              (messages.find((m) => m.id === reactionPickerFor)?.reactions ?? []).filter((r) => r.byMe).map((r) => r.emoji)
+            )
+            : undefined
+        }
+        onClose={() => setReactionPickerFor(null)}
+        onPick={(emoji) => {
+          const id = reactionPickerFor;
+          if (!id) return;
+          void pickReaction(id, emoji);
+        }}
+      />
 
       {/* メッセージ入力 */}
       <div style={{

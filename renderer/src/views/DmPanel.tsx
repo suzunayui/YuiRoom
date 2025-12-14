@@ -3,6 +3,7 @@ import { api } from "../api";
 import type { DmMessage, DmSearchMessage } from "../api";
 import { Modal } from "../Modal";
 import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "../linkify";
+import { EmojiPickerModal } from "../modals/EmojiPickerModal";
 
 type Props = {
   selectedDmPeerName: string | null;
@@ -16,11 +17,9 @@ type Props = {
   dmMessages: DmMessage[];
   dmHighlightId: string | null;
 
-  dmReactionEmojis: string[];
   dmReactionPickerFor: string | null;
   setDmReactionPickerFor: (updater: (prev: string | null) => string | null) => void;
   toggleDmReaction: (messageId: string, emoji: string) => void | Promise<void>;
-  pickDmReaction: (messageId: string, emoji: string) => void | Promise<void>;
 
   dmText: string;
   setDmText: (v: string) => void;
@@ -51,11 +50,9 @@ export function DmPanel({
   dmError,
   dmMessages,
   dmHighlightId,
-  dmReactionEmojis,
   dmReactionPickerFor,
   setDmReactionPickerFor,
   toggleDmReaction,
-  pickDmReaction,
   dmText,
   setDmText,
   dmSending,
@@ -226,48 +223,29 @@ export function DmPanel({
                 </button>
               </div>
 
-              {dmReactionPickerFor === msg.id && (
-                <div
-                  style={{
-                    marginTop: 8,
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 8,
-                    padding: "10px 10px",
-                    borderRadius: 10,
-                    border: "1px solid #40444b",
-                    background: "#2f3136",
-                    maxWidth: 360,
-                  }}
-                >
-                  {dmReactionEmojis.map((emoji) => (
-                    <button
-                      key={emoji}
-                      onClick={() => void pickDmReaction(msg.id, emoji)}
-                      style={{
-                        width: 36,
-                        height: 32,
-                        borderRadius: 8,
-                        border: "1px solid #40444b",
-                        background: "transparent",
-                        color: "#dcddde",
-                        cursor: "pointer",
-                        fontSize: 16,
-                        display: "grid",
-                        placeItems: "center",
-                      }}
-                      title={emoji}
-                      aria-label={`リアクション ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         ))}
       </div>
+
+      <EmojiPickerModal
+        open={!!dmReactionPickerFor}
+        title="リアクション"
+        storageKey={`yuiroom.recentEmojis.dm:${selectedDmThreadId || "none"}`}
+        selected={
+          dmReactionPickerFor
+            ? new Set(
+              (dmMessages.find((m) => m.id === dmReactionPickerFor)?.reactions ?? []).filter((r) => r.byMe).map((r) => r.emoji)
+            )
+            : undefined
+        }
+        onClose={() => setDmReactionPickerFor(() => null)}
+        onPick={(emoji) => {
+          const id = dmReactionPickerFor;
+          if (!id) return;
+          void toggleDmReaction(id, emoji);
+        }}
+      />
 
       <div
         style={{

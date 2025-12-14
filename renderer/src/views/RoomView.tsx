@@ -68,11 +68,9 @@ export function RoomView(props: any) {
     dmError,
     dmMessages,
     dmHighlightId,
-    dmReactionEmojis,
     dmReactionPickerFor,
     setDmReactionPickerFor,
     toggleDmReaction,
-    pickDmReaction,
     dmText,
     setDmText,
     dmSending,
@@ -191,11 +189,9 @@ export function RoomView(props: any) {
           dmError={dmError}
           dmMessages={dmMessages}
           dmHighlightId={dmHighlightId}
-          dmReactionEmojis={dmReactionEmojis}
           dmReactionPickerFor={dmReactionPickerFor}
           setDmReactionPickerFor={setDmReactionPickerFor}
           toggleDmReaction={toggleDmReaction}
-          pickDmReaction={pickDmReaction}
           dmText={dmText}
           setDmText={setDmText}
           dmSending={dmSending}

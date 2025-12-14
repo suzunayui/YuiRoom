@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { initDb, pool } from "./db.js";
+import { spawn } from "node:child_process";
 import { randomUUID, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -27,6 +28,110 @@ const wsClients = new Set<WsClient>();
 const wsByChannel = new Map<string, Set<WsClient>>();
 const wsByDmThread = new Map<string, Set<WsClient>>();
 const wsByUserId = new Map<string, Set<WsClient>>();
+
+function detectMp4(buf: Buffer): boolean {
+  // ISO BMFF: size (4 bytes) + "ftyp" (4 bytes) + brand...
+  return buf.length >= 12 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70;
+}
+
+function detectMp4VideoCodecHint(buf: Buffer): "h264" | "hevc" | "av1" | "vp9" | "unknown" {
+  const has = (fourcc: string) => buf.includes(Buffer.from(fourcc));
+  if (has("avc1") || has("avc3")) return "h264";
+  if (has("hvc1") || has("hev1")) return "hevc";
+  if (has("av01")) return "av1";
+  if (has("vp09")) return "vp9";
+  return "unknown";
+}
+
+async function transcodeMp4ToH264Aac(input: Buffer): Promise<Buffer> {
+  return await new Promise<Buffer>((resolve, reject) => {
+    const ffmpeg = spawn(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "pipe:0",
+        "-vf",
+        "scale='min(1280,iw)':-2",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "28",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        "pipe:1",
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] }
+    );
+
+    let done = false;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let stderr = "";
+
+    const finish = (err?: Error, out?: Buffer) => {
+      if (done) return;
+      done = true;
+      try {
+        ffmpeg.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      if (err) reject(err);
+      else resolve(out ?? Buffer.alloc(0));
+    };
+
+    const timeout = setTimeout(() => finish(new Error("attachment_transcode_timeout")), 60_000);
+
+    ffmpeg.on("error", () => {
+      clearTimeout(timeout);
+      finish(new Error("attachment_transcode_unavailable"));
+    });
+
+    ffmpeg.stdout.on("data", (d: Buffer) => {
+      total += d.length;
+      if (total > 10 * 1024 * 1024) {
+        clearTimeout(timeout);
+        finish(new Error("attachment_transcode_output_too_large"));
+        return;
+      }
+      chunks.push(d);
+    });
+
+    ffmpeg.stderr.on("data", (d: Buffer) => {
+      if (stderr.length < 1500) stderr += d.toString("utf8");
+    });
+
+    ffmpeg.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        finish(undefined, Buffer.concat(chunks, total));
+      } else {
+        // stderrはログ用に残しつつ、APIのエラーは固定コードにする
+        finish(new Error(stderr.trim() ? `attachment_transcode_failed:${stderr.trim()}` : "attachment_transcode_failed"));
+      }
+    });
+
+    try {
+      ffmpeg.stdin.end(input);
+    } catch {
+      clearTimeout(timeout);
+      finish(new Error("attachment_transcode_failed"));
+    }
+  });
+}
 
 function wsSubscribe(map: Map<string, Set<WsClient>>, key: string, c: WsClient) {
   let set = map.get(key);
@@ -791,14 +896,18 @@ async function isFirstRegisteredUser(userId: string) {
   return String(r.rows?.[0]?.id || "") === userId;
 }
 
-function parseDataUrlAttachment(dataUrl: string): { mime: string; bytes: Buffer } | null {
+type ParsedAttachmentResult =
+  | { ok: true; mime: string; bytes: Buffer }
+  | { ok: false; error: string };
+
+function parseDataUrlAttachmentDetailed(dataUrl: string): ParsedAttachmentResult {
   // data:<mime>;base64,....
   const m = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
-  if (!m || !m[1] || !m[2]) return null;
+  if (!m || !m[1] || !m[2]) return { ok: false, error: "attachment_invalid_dataUrl" };
   const declaredMime = String(m[1]).toLowerCase();
   const b64 = String(m[2]);
   const bytes = Buffer.from(b64, "base64");
-  if (!bytes || bytes.length < 12) return null;
+  if (!bytes || bytes.length < 12) return { ok: false, error: "attachment_invalid_dataUrl" };
 
   function detectRasterImageMime(buf: Buffer): "image/png" | "image/jpeg" | "image/gif" | "image/webp" | null {
     // PNG: 89 50 4E 47 0D 0A 1A 0A
@@ -852,26 +961,27 @@ function parseDataUrlAttachment(dataUrl: string): { mime: string; bytes: Buffer 
     return null;
   }
 
-  function detectMp4(buf: Buffer): boolean {
-    // ISO BMFF: size (4 bytes) + "ftyp" (4 bytes) + brand...
-    return buf.length >= 12 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70;
-  }
-
   const imageDetected = detectRasterImageMime(bytes);
   if (imageDetected) {
     const normalizedDeclared =
       declaredMime === "image/jpg" ? "image/jpeg" : declaredMime === "image/pjpeg" ? "image/jpeg" : declaredMime;
     const allowedDeclared = new Set(["image/png", "image/jpeg", "image/jpg", "image/pjpeg", "image/webp", "image/gif"]);
-    if (!allowedDeclared.has(declaredMime)) return null;
-    if (normalizedDeclared !== imageDetected) return null;
-    return { mime: imageDetected, bytes };
+    if (!allowedDeclared.has(declaredMime)) return { ok: false, error: "attachment_invalid_dataUrl" };
+    if (normalizedDeclared !== imageDetected) return { ok: false, error: "attachment_invalid_dataUrl" };
+    return { ok: true, mime: imageDetected, bytes };
   }
 
   if (declaredMime === "video/mp4" && detectMp4(bytes)) {
-    return { mime: "video/mp4", bytes };
+    return { ok: true, mime: "video/mp4", bytes };
   }
 
-  return null;
+  return { ok: false, error: "attachment_invalid_dataUrl" };
+}
+
+function parseDataUrlAttachment(dataUrl: string): { mime: string; bytes: Buffer } | null {
+  const r = parseDataUrlAttachmentDetailed(dataUrl);
+  if (!r.ok) return null;
+  return { mime: r.mime, bytes: r.bytes };
 }
 
 function parseDataUrlImage(dataUrl: string): { mime: string; bytes: Buffer } | null {
@@ -2526,10 +2636,37 @@ app.post(
       if (typeof a !== "object" || a == null) return res.status(400).json({ error: "attachment_invalid" });
       const dataUrl = (a as any).dataUrl;
       if (typeof dataUrl !== "string") return res.status(400).json({ error: "attachment_dataUrl_required" });
-      const parsed = parseDataUrlAttachment(dataUrl);
-      if (!parsed) return res.status(400).json({ error: "attachment_invalid_dataUrl" });
+      const parsed = parseDataUrlAttachmentDetailed(dataUrl);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
       if (parsed.bytes.length > 10 * 1024 * 1024) return res.status(400).json({ error: "attachment_too_large" });
-      attachments.push({ mime_type: parsed.mime, data: parsed.bytes });
+
+      let data = parsed.bytes;
+      let mimeType = parsed.mime;
+      if (mimeType === "video/mp4") {
+        const mode = String(process.env.TRANSCODE_MP4 ?? "auto").toLowerCase();
+        const hint = detectMp4VideoCodecHint(data);
+        const shouldTranscode = mode === "1" || mode === "true" || (mode !== "0" && mode !== "false" && hint !== "h264");
+        if (shouldTranscode) {
+          try {
+            data = await transcodeMp4ToH264Aac(data);
+            mimeType = "video/mp4";
+          } catch (e: any) {
+            const msg = String(e?.message ?? "attachment_transcode_failed");
+            if (msg.startsWith("attachment_transcode_unavailable")) {
+              return res.status(500).json({ error: "attachment_transcode_unavailable" });
+            }
+            if (msg.startsWith("attachment_transcode_timeout")) {
+              return res.status(400).json({ error: "attachment_transcode_timeout" });
+            }
+            if (msg.startsWith("attachment_transcode_output_too_large")) {
+              return res.status(400).json({ error: "attachment_transcode_output_too_large" });
+            }
+            return res.status(400).json({ error: "attachment_transcode_failed" });
+          }
+        }
+      }
+
+      attachments.push({ mime_type: mimeType, data });
     }
   }
 

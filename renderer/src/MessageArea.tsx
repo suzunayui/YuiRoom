@@ -19,6 +19,17 @@ type Props = {
   onJumpToMessage?: (args: { channelId: string; messageId: string }) => void;
 };
 
+function humanizeError(err: string): string {
+  if (!err) return err;
+  if (err === "attachment_too_large") return "添付ファイルが大きすぎます（10MBまで）";
+  if (err === "attachment_invalid_dataUrl") return "添付ファイルの形式が不正です";
+  if (err === "attachment_transcode_failed") return "動画の変換に失敗しました（別の動画で試すか、H.264/AACで再エンコードして下さい）";
+  if (err === "attachment_transcode_timeout") return "動画の変換がタイムアウトしました（動画が長い/重い可能性）";
+  if (err === "attachment_transcode_output_too_large") return "変換後の動画サイズが大きすぎます（10MBまで）";
+  if (err === "attachment_transcode_unavailable") return "サーバー側の動画変換が利用できません（管理者に連絡して下さい）";
+  return err;
+}
+
 function formatTime(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -930,7 +941,7 @@ export function MessageArea({
             </div>
           )}
           {loading && <div style={{ opacity: 0.8, fontSize: 13 }}>読み込み中…</div>}
-          {error && <div style={{ color: "#ff7a7a", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ color: "#ff7a7a", fontSize: 12, marginBottom: 10 }}>{humanizeError(error)}</div>}
           {!loading && !error && selectedChannelId && messages.length === 0 && (
             <div style={{ opacity: 0.8, fontSize: 13 }}>まだメッセージがないよ</div>
           )}

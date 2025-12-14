@@ -9,6 +9,6 @@ COPY . .
 
 EXPOSE 3000
 
-RUN apk add --no-cache wget
+RUN apk add --no-cache wget ffmpeg
 
 CMD ["npm", "run", "start", "--silent"]

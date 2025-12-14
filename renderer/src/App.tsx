@@ -8,7 +8,13 @@ import { MessageArea } from "./MessageArea";
 import { Modal } from "./Modal";
 import { Drawer } from "./Drawer";
 import { MemberPane } from "./MemberPane";
-import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "./linkify";
+import { SettingsModal } from "./modals/SettingsModal";
+import { RoomSettingsModal } from "./modals/RoomSettingsModal";
+import { BanModal } from "./modals/BanModal";
+import { ConfirmActionModal } from "./modals/ConfirmActionModal";
+import { JoinRoomModal } from "./modals/JoinRoomModal";
+import { HomeAuditModal } from "./modals/HomeAuditModal";
+import { DmPanel } from "./views/DmPanel";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type { DmMessage, DmSearchMessage, FriendRequests, FriendUser } from "./api";
 import type { RoomMember } from "./api";
@@ -2365,400 +2371,45 @@ export default function App() {
           ) : null}
 
           {selectedRoomId === HOME_ID ? (
-            <div
-              style={{
-                flex: 1,
-                background: "#36393f",
-                color: "#dcddde",
-                display: "flex",
-                flexDirection: "column",
-                height: "var(--app-height)",
+            <DmPanel
+              selectedDmPeerName={selectedDmPeerName}
+              selectedDmThreadId={selectedDmThreadId}
+              enterKeySends={enterKeySends}
+              dmListRef={dmListRef}
+              dmLoading={dmLoading}
+              dmError={dmError}
+              dmMessages={dmMessages}
+              dmHighlightId={dmHighlightId}
+              dmReactionEmojis={dmReactionEmojis}
+              dmReactionPickerFor={dmReactionPickerFor}
+              setDmReactionPickerFor={setDmReactionPickerFor}
+              toggleDmReaction={toggleDmReaction}
+              pickDmReaction={pickDmReaction}
+              dmText={dmText}
+              setDmText={setDmText}
+              dmSending={dmSending}
+              sendDm={sendDm}
+              openDmSearch={openDmSearch}
+              dmSearchOpen={dmSearchOpen}
+              closeDmSearch={closeDmSearch}
+              dmSearchBusy={dmSearchBusy}
+              dmSearchQ={dmSearchQ}
+              setDmSearchQ={setDmSearchQ}
+              dmSearchError={dmSearchError}
+              dmSearchItems={dmSearchItems}
+              dmSearchHasMore={dmSearchHasMore}
+              runDmSearch={runDmSearch}
+              dmSearchInputRef={dmSearchInputRef}
+              onPickSearchResult={(messageId) => {
+                if (!selectedDmThreadId) return;
+                setFocusDmMessage((prev) => ({
+                  threadId: selectedDmThreadId,
+                  messageId,
+                  nonce: (prev?.nonce ?? 0) + 1,
+                }));
+                setDmSearchOpen(false);
               }}
-            >
-              <div
-                style={{
-                  padding: "16px",
-                  borderBottom: "1px solid #202225",
-                  fontSize: 16,
-                  fontWeight: "bold",
-                }}
-              >
-                {selectedDmPeerName ? `@ ${selectedDmPeerName}` : "フレンド未選択"}
-              </div>
-
-              {selectedDmThreadId && (
-                <div style={{ padding: "10px 16px 0", display: "flex", justifyContent: "flex-end", gap: 10 }}>
-                  <div style={{ marginRight: "auto", color: "#8e9297", fontSize: 12, alignSelf: "center" }}>Ctrl+K</div>
-                  <button
-                    onClick={openDmSearch}
-                    style={{
-                      border: "1px solid #40444b",
-                      background: "transparent",
-                      color: "#dcddde",
-                      borderRadius: 10,
-                      padding: "8px 10px",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 900,
-                    }}
-                    title="検索 (Ctrl+K)"
-                  >
-                    検索
-                  </button>
-                </div>
-              )}
-
-              <div ref={dmListRef} className="darkScroll" style={{ flex: 1, padding: "16px", overflowY: "auto" }}>
-                {dmLoading && <div style={{ opacity: 0.8, fontSize: 13 }}>読み込み中…</div>}
-                {dmError && <div style={{ color: "#ff7a7a", fontSize: 12, marginBottom: 10 }}>{dmError}</div>}
-                {!dmLoading && !dmError && selectedDmThreadId && dmMessages.length === 0 && (
-                  <div style={{ opacity: 0.8, fontSize: 13 }}>まだメッセージがないよ</div>
-                )}
-
-                {dmMessages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    id={`dm_msg_${msg.id}`}
-                    style={{
-                      marginBottom: 16,
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 12,
-                      padding: "6px 8px",
-                      borderRadius: 12,
-                      background: dmHighlightId === msg.id ? "rgba(114,137,218,0.20)" : "transparent",
-                      transition: "background 180ms ease",
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 40,
-                        height: 40,
-                        borderRadius: "50%",
-                        background: "#7289da",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: "#ffffff",
-                        fontWeight: "bold",
-                        flexShrink: 0,
-                        overflow: "hidden",
-                      }}
-                      title={msg.author}
-                    >
-                      {msg.author_has_avatar ? (
-                        <img
-                          src={api.userAvatarUrl(msg.author_id)}
-                          alt="avatar"
-                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                        />
-                      ) : (
-                        msg.author?.[0]?.toUpperCase?.() ?? "?"
-                      )}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 14,
-                          fontWeight: "bold",
-                          color: "#ffffff",
-                          marginBottom: 4,
-                          display: "flex",
-                          alignItems: "baseline",
-                          gap: 8,
-                        }}
-                      >
-                        {msg.author}
-                        <span style={{ fontSize: 12, color: "#72767d", fontWeight: "normal" }}>
-                          {new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 14, lineHeight: 1.4, wordWrap: "break-word" as any }}>
-                        {renderTextWithLinks(msg.content)}
-                      </div>
-
-                      {msg.reactions && msg.reactions.length > 0 && (
-                        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {msg.reactions.map((r) => (
-                            <button
-                              key={r.emoji}
-                              onClick={() => void toggleDmReaction(msg.id, r.emoji)}
-                              style={{
-                                border: "1px solid #40444b",
-                                background: r.byMe ? "#40444b" : "transparent",
-                                color: "#dcddde",
-                                borderRadius: 999,
-                                padding: "4px 8px",
-                                fontSize: 12,
-                                cursor: "pointer",
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 6,
-                              }}
-                              title="リアクション"
-                            >
-                              <span>{r.emoji}</span>
-                              <span style={{ opacity: 0.9 }}>{r.count}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-
-                      <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center" }}>
-                        <button
-                          onClick={() => setDmReactionPickerFor((prev) => (prev === msg.id ? null : msg.id))}
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            color: "#8e9297",
-                            cursor: "pointer",
-                            fontSize: 12,
-                            padding: 0,
-                          }}
-                          title="リアクションを追加"
-                        >
-                          リアクション
-                        </button>
-                      </div>
-
-                      {dmReactionPickerFor === msg.id && (
-                        <div
-                          style={{
-                            marginTop: 8,
-                            display: "flex",
-                            flexWrap: "wrap",
-                            gap: 8,
-                            padding: "10px 10px",
-                            borderRadius: 10,
-                            border: "1px solid #40444b",
-                            background: "#2f3136",
-                            maxWidth: 360,
-                          }}
-                        >
-                          {dmReactionEmojis.map((emoji) => (
-                            <button
-                              key={emoji}
-                              onClick={() => void pickDmReaction(msg.id, emoji)}
-                              style={{
-                                width: 36,
-                                height: 32,
-                                borderRadius: 8,
-                                border: "1px solid #40444b",
-                                background: "transparent",
-                                color: "#dcddde",
-                                cursor: "pointer",
-                                fontSize: 16,
-                                display: "grid",
-                                placeItems: "center",
-                              }}
-                              title={emoji}
-                              aria-label={`リアクション ${emoji}`}
-                            >
-                              {emoji}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div
-                style={{
-                  padding: "12px 16px",
-                  paddingBottom: "calc(12px + env(safe-area-inset-bottom) + var(--app-occluded-bottom))",
-                  borderTop: "1px solid #202225",
-                }}
-              >
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <textarea
-                    value={dmText}
-                    onChange={(e) => setDmText(e.target.value)}
-                    placeholder={selectedDmThreadId ? "メッセージを送信" : "フレンドを選択してね"}
-                    disabled={!selectedDmThreadId || dmSending}
-                    style={{
-                      flex: 1,
-                      padding: "12px 12px",
-                      borderRadius: 8,
-                      border: "1px solid #40444b",
-                      background: "#202225",
-                      color: "#dcddde",
-                      fontSize: 14,
-                      outline: "none",
-                      opacity: !selectedDmThreadId ? 0.6 : 1,
-                      minHeight: 44,
-                      maxHeight: 160,
-                      resize: "none",
-                      lineHeight: 1.4,
-                      overflowY: "auto",
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter" || (e as any).isComposing) return;
-                      const shouldSend = enterKeySends ? !e.shiftKey : e.shiftKey;
-                      if (!shouldSend) return;
-                      e.preventDefault();
-                      void sendDm();
-                    }}
-                  />
-                  <button
-                    onClick={() => void sendDm()}
-                    disabled={!selectedDmThreadId || dmSending}
-                    style={{
-                      padding: "12px 14px",
-                      borderRadius: 8,
-                      border: "none",
-                      background: "#7289da",
-                      color: "#ffffff",
-                      fontWeight: 900,
-                      cursor: !selectedDmThreadId ? "not-allowed" : "pointer",
-                      opacity: !selectedDmThreadId ? 0.6 : 1,
-                    }}
-                  >
-                    送信
-                  </button>
-                </div>
-              </div>
-
-              {dmSearchOpen && (
-                <Modal
-                  title="DM検索"
-                  onClose={closeDmSearch}
-                  maxWidth="min(720px, 95vw)"
-                  footer={
-                    <>
-                      <button
-                        onClick={closeDmSearch}
-                        disabled={dmSearchBusy}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 8,
-                          border: "1px solid #40444b",
-                          background: "transparent",
-                          color: "#dcddde",
-                          cursor: "pointer",
-                          fontSize: 13,
-                        }}
-                      >
-                        閉じる
-                      </button>
-                      <button
-                        onClick={() => void runDmSearch({ append: false })}
-                        disabled={dmSearchBusy || !dmSearchQ.trim()}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 8,
-                          border: "none",
-                          background: "#7289da",
-                          color: "#ffffff",
-                          cursor: "pointer",
-                          fontSize: 13,
-                          fontWeight: 900,
-                          opacity: dmSearchBusy || !dmSearchQ.trim() ? 0.7 : 1,
-                        }}
-                      >
-                        検索
-                      </button>
-                    </>
-                  }
-                >
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <input
-                      ref={dmSearchInputRef}
-                      value={dmSearchQ}
-                      onChange={(e) => setDmSearchQ(e.target.value)}
-                      placeholder="Search (Ctrl+K)"
-                      autoFocus
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void runDmSearch({ append: false });
-                      }}
-                      style={{
-                        width: "100%",
-                        padding: "12px 12px",
-                        borderRadius: 10,
-                        border: "1px solid #40444b",
-                        background: "#202225",
-                        color: "#dcddde",
-                        fontSize: 14,
-                        outline: "none",
-                      }}
-                    />
-
-                    {dmSearchError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{dmSearchError}</div>}
-
-                    {dmSearchItems.length === 0 ? (
-                      <div style={{ color: "#8e9297", fontSize: 12 }}>見つからない</div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 8 }}>
-                        {dmSearchItems.map((it) => (
-                          <button
-                            key={it.id}
-                            type="button"
-                            onClick={() => {
-                              if (!selectedDmThreadId) return;
-                              setFocusDmMessage((prev) => ({
-                                threadId: selectedDmThreadId,
-                                messageId: it.id,
-                                nonce: (prev?.nonce ?? 0) + 1,
-                              }));
-                              setDmSearchOpen(false);
-                            }}
-                            style={{
-                              textAlign: "left",
-                              border: "1px solid #40444b",
-                              background: "#202225",
-                              color: "#dcddde",
-                              borderRadius: 12,
-                              padding: "10px 12px",
-                              cursor: "pointer",
-                              display: "grid",
-                              gap: 6,
-                            }}
-                            title={it.author}
-                          >
-                            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-                              <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {it.author}
-                              </div>
-                              <div style={{ color: "#8e9297", fontSize: 12, flexShrink: 0 }}>
-                                {new Date(it.created_at).toLocaleString()}
-                              </div>
-                            </div>
-                            <div style={{ fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
-                              {renderTextWithLinksAndHighlights(
-                                it.content.length > 180 ? `${it.content.slice(0, 180)}…` : it.content,
-                                dmSearchQ
-                              )}
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    {dmSearchHasMore && (
-                      <button
-                        type="button"
-                        onClick={() => void runDmSearch({ append: true })}
-                        disabled={dmSearchBusy}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 10,
-                          border: "1px solid #40444b",
-                          background: "transparent",
-                          color: "#dcddde",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                          fontSize: 12,
-                          opacity: dmSearchBusy ? 0.7 : 1,
-                        }}
-                      >
-                        {dmSearchBusy ? "読み込み中…" : "さらに読み込む"}
-                      </button>
-                    )}
-                  </div>
-                </Modal>
-              )}
-            </div>
+            />
           ) : (
             <div style={{ display: "flex", flex: 1, height: "var(--app-height)" }}>
               <MessageArea
@@ -3629,173 +3280,24 @@ export default function App() {
         </Modal>
       )}
 
-      {authed && settingsOpen && (
-        <Modal
-          title="設定"
-          onClose={closeSettings}
-          footer={
-            <>
-              <button
-                onClick={closeSettings}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                閉じる
-              </button>
-              <button
-                onClick={saveSettings}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7289da",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 800,
-                }}
-              >
-                保存
-              </button>
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
-              表示名
-              <input
-                value={settingsName}
-                onChange={(e) => setSettingsName(e.target.value)}
-                autoFocus
-                style={{
-                  width: "100%",
-                  padding: "12px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "#202225",
-                  color: "#dcddde",
-                  fontSize: 14,
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void saveSettings();
-                  if (e.key === "Escape") closeSettings();
-                }}
-                placeholder="例: みかん"
-              />
-            </label>
-
-            <div style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
-              アイコン画像
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: "50%",
-                    background: "#7289da",
-                    display: "grid",
-                    placeItems: "center",
-                    overflow: "hidden",
-                    flexShrink: 0,
-                    color: "#ffffff",
-                    fontWeight: 900,
-                    fontSize: 16,
-                  }}
-                  title="プレビュー"
-                >
-                  {settingsAvatar ? (
-                    <img
-                      src={settingsAvatar}
-                      alt="avatar preview"
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                    />
-                  ) : (
-                    (settingsName || displayName || currentUserId || "?")?.[0]?.toUpperCase?.() ?? "?"
-                  )}
-                </div>
-
-                <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      if (!file.type.startsWith("image/")) return;
-                      try {
-                        const dataUrl = await fileToPngAvatarDataUrl(file, 256);
-                        setSettingsAvatar(dataUrl);
-                      } catch (err: any) {
-                        const msg = String(err?.message ?? "");
-                        if (msg === "avatar_too_large") {
-                          alert("アイコン画像が大きすぎます（2MB以下になるよう縮小してください）");
-                        } else {
-                          alert("対応していない画像形式です（PNG/JPEG/GIF/WebP）");
-                        }
-                      }
-                      e.currentTarget.value = "";
-                    }}
-                    style={{
-                      width: "100%",
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: "1px solid #40444b",
-                      background: "#202225",
-                      color: "#dcddde",
-                      fontSize: 13,
-                    }}
-                  />
-                  <button
-                    onClick={() => setSettingsAvatar("")}
-                    style={{
-                      justifySelf: "start",
-                      padding: "8px 10px",
-                      borderRadius: 8,
-                      border: "1px solid #40444b",
-                      background: "transparent",
-                      color: "#dcddde",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    画像を削除
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
-              送信キー
-              <label style={{ display: "flex", alignItems: "center", gap: 10, color: "#dcddde", fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  checked={enterKeySends}
-                  onChange={(e) => {
-                    const v = e.target.checked;
-                    setEnterKeySends(v);
-                    writeEnterKeySends(v);
-                  }}
-                />
-                Enterで送信（Shift+Enterで改行）
-              </label>
-              <div style={{ color: "#8e9297", fontSize: 12, lineHeight: 1.4 }}>
-                OFFにすると「Enterで改行 / Shift+Enterで送信」になります。
-              </div>
-            </div>
-
-            {settingsError && (
-              <div style={{ color: "#ff7a7a", fontSize: 12, lineHeight: 1.3 }}>{settingsError}</div>
-            )}
-          </div>
-        </Modal>
-      )}
+      <SettingsModal
+        open={authed && settingsOpen}
+        onClose={closeSettings}
+        onSave={saveSettings}
+        settingsName={settingsName}
+        setSettingsName={setSettingsName}
+        settingsAvatar={settingsAvatar}
+        setSettingsAvatar={setSettingsAvatar}
+        settingsError={settingsError}
+        displayName={displayName}
+        currentUserId={currentUserId}
+        fileToPngAvatarDataUrl={fileToPngAvatarDataUrl}
+        enterKeySends={enterKeySends}
+        onChangeEnterKeySends={(v) => {
+          setEnterKeySends(v);
+          writeEnterKeySends(v);
+        }}
+      />
 
       {authed && addFriendOpen && (
         <Modal
@@ -4146,735 +3648,75 @@ export default function App() {
         </Modal>
       )}
 
-      {authed && banModal && (
-        <Modal title={`BAN（${banModal.roomName}）`} onClose={closeBanModal}>
-          <div style={{ display: "grid", gap: 10 }}>
+      <BanModal
+        open={authed && !!banModal}
+        roomName={banModal?.roomName ?? ""}
+        userId={banUserId}
+        onChangeUserId={setBanUserId}
+        reason={banReason}
+        onChangeReason={setBanReason}
+        busy={banBusy}
+        error={banError}
+        onClose={closeBanModal}
+        onBan={() => void submitBan("ban")}
+        onUnban={() => void submitBan("unban")}
+      />
 
-            <label className="label">
-              ユーザーID
-              <input
-                className="input"
-                value={banUserId}
-                onChange={(e) => setBanUserId(e.target.value)}
-                placeholder="例: user_id"
-                disabled={banBusy}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-            </label>
+      <RoomSettingsModal
+        open={authed && !!inviteModal}
+        inviteModal={inviteModal}
+        onClose={closeInviteModal}
+        roomSettingsTab={roomSettingsTab}
+        setRoomSettingsTab={setRoomSettingsTab}
+        inviteBusy={inviteBusy}
+        inviteError={inviteError}
+        auditError={auditError}
+        currentUserId={currentUserId}
+        members={members}
+        invites={invites}
+        auditLogs={auditLogs}
+        inviteUrlFromCode={inviteUrlFromCode}
+        setToast={setToast}
+        onLeaveRoom={(roomId) => void leaveRoom(roomId)}
+        onCreateInvite={() => void createInvite()}
+        onDeleteInvite={(code) => void deleteInvite(code)}
+        onRefreshAudit={() => void refreshAudit()}
+        onBanFromMemberList={banFromMemberList}
+        onKickMember={(userId) => void kickMember(userId)}
+        onDeleteRoom={deleteRoomFromSettings}
+      />
 
-            <label className="label">
-              理由（任意）
-              <input
-                className="input"
-                value={banReason}
-                onChange={(e) => setBanReason(e.target.value)}
-                placeholder="任意"
-                disabled={banBusy}
-              />
-            </label>
+      <ConfirmActionModal
+        open={authed && !!confirmModal}
+        action={confirmModal as any}
+        busy={inviteBusy}
+        onClose={closeConfirmModal}
+        onConfirm={(action) => {
+          if (action.kind === "leave") void confirmLeaveRoom(action.roomId);
+          if (action.kind === "kick") void confirmKickMember(action.roomId, action.userId);
+          setConfirmModal(null);
+        }}
+      />
 
-            {banError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{banError}</div>}
+      <JoinRoomModal
+        open={authed && joinOpen}
+        joinCode={joinCode}
+        onChangeJoinCode={setJoinCode}
+        busy={joinBusy}
+        error={joinError}
+        canJoin={!!extractInviteCode(joinCode)}
+        onClose={closeJoinModal}
+        onJoin={() => void submitJoin()}
+      />
 
-            <div style={{ display: "flex", gap: 10 }}>
-              <button className="primary" onClick={() => void submitBan("ban")} disabled={banBusy}>
-                {banBusy ? "処理中…" : "BAN"}
-              </button>
-              <button
-                onClick={() => void submitBan("unban")}
-                disabled={banBusy}
-                style={{
-                  width: "100%",
-                  border: "1px solid rgba(255,255,255,0.14)",
-                  padding: "12px 14px",
-                  borderRadius: 14,
-                  fontWeight: 800,
-                  cursor: "pointer",
-                  background: "rgba(0,0,0,0.18)",
-                  color: "#e8ecff",
-                  marginTop: 10,
-                  opacity: banBusy ? 0.45 : 1,
-                }}
-              >
-                BAN解除
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {authed && inviteModal && (
-        <Modal
-          title={`Room設定（${inviteModal.roomName}）`}
-          onClose={closeInviteModal}
-        >
-          <div style={{ display: "grid", gap: 14, color: "#dcddde" }}>
-            {inviteError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{inviteError}</div>}
-
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={() => setRoomSettingsTab("members")}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: 999,
-                  border: "1px solid #40444b",
-                  background: roomSettingsTab === "members" ? "#40444b" : "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 900,
-                }}
-              >
-                メンバー
-              </button>
-              {inviteModal.isOwner && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setRoomSettingsTab("invites")}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #40444b",
-                      background: roomSettingsTab === "invites" ? "#40444b" : "transparent",
-                      color: "#dcddde",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 900,
-                    }}
-                  >
-                    招待
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRoomSettingsTab("audit")}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #40444b",
-                      background: roomSettingsTab === "audit" ? "#40444b" : "transparent",
-                      color: "#dcddde",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 900,
-                    }}
-                  >
-                    監査ログ
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRoomSettingsTab("danger")}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid rgba(237,66,69,0.55)",
-                      background: roomSettingsTab === "danger" ? "rgba(237,66,69,0.18)" : "transparent",
-                      color: "#ff7a7a",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 900,
-                    }}
-                  >
-                    危険
-                  </button>
-                </>
-              )}
-            </div>
-
-            {roomSettingsTab === "members" && (
-              <>
-                <div style={{ fontSize: 12, color: "#b9bbbe" }}>メンバー</div>
-                {members.length === 0 ? (
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>なし</div>
-                ) : (
-                  <div
-                    className="darkScroll"
-                    style={{ display: "grid", gap: 8, maxHeight: 420, overflowY: "auto", paddingRight: 2 }}
-                  >
-                    {members.map((m) => (
-                      <div
-                        key={m.userId}
-                        style={{
-                          display: "flex",
-                          gap: 10,
-                          alignItems: "center",
-                          padding: "8px 10px",
-                          borderRadius: 10,
-                          border: "1px solid #40444b",
-                          background: "#202225",
-                        }}
-                      >
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                      <div
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: "50%",
-                          background: "#7289da",
-                          display: "grid",
-                          placeItems: "center",
-                          color: "#ffffff",
-                          fontWeight: 900,
-                          flexShrink: 0,
-                          overflow: "hidden",
-                        }}
-                        title={m.displayName}
-                      >
-                        {m.hasAvatar ? (
-                          <img
-                            src={api.userAvatarUrl(m.userId)}
-                            alt="avatar"
-                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                          />
-                        ) : (
-                          m.displayName?.[0]?.toUpperCase?.() ?? "?"
-                        )}
-                      </div>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {m.displayName}
-                          {m.isOwner && <span style={{ marginLeft: 8, fontSize: 11, color: "#b9bbbe" }}>(owner)</span>}
-                        </div>
-                        <div style={{ fontSize: 11, color: "#8e9297", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
-                          {m.userId}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-                      {inviteModal.isOwner && m.userId !== currentUserId && (
-                        <button
-                          onClick={() => banFromMemberList(m.userId)}
-                          disabled={inviteBusy}
-                          style={{
-                            border: "none",
-                            background: "#ed4245",
-                            color: "#ffffff",
-                            cursor: "pointer",
-                            padding: "6px 10px",
-                            borderRadius: 8,
-                            fontWeight: 900,
-                            fontSize: 12,
-                            opacity: inviteBusy ? 0.7 : 1,
-                          }}
-                          title="BAN"
-                        >
-                          BAN
-                        </button>
-                      )}
-                      {inviteModal.isOwner && m.userId !== currentUserId && !m.isOwner && (
-                        <button
-                          onClick={() => void kickMember(m.userId)}
-                          disabled={inviteBusy}
-                          style={{
-                            border: "none",
-                            background: "#ed4245",
-                            color: "#ffffff",
-                            cursor: "pointer",
-                            padding: "6px 10px",
-                            borderRadius: 8,
-                            fontWeight: 900,
-                            fontSize: 12,
-                            opacity: inviteBusy ? 0.7 : 1,
-                          }}
-                          title="キック"
-                        >
-                          外す
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                    ))}
-                  </div>
-                )}
-
-                {!inviteModal.isOwner && (
-                  <button
-                    onClick={() => void leaveRoom(inviteModal.roomId)}
-                    disabled={inviteBusy}
-                    style={{
-                      padding: "12px 14px",
-                      borderRadius: 12,
-                      border: "none",
-                      background: "#ed4245",
-                      color: "#ffffff",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                      opacity: inviteBusy ? 0.7 : 1,
-                    }}
-                  >
-                    退出する
-                  </button>
-                )}
-              </>
-            )}
-
-            {inviteModal.isOwner && (
-              <>
-                {roomSettingsTab === "invites" && (
-                  <>
-                    <div style={{ height: 1, background: "#202225" }} />
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <button
-                    className="primary"
-                    onClick={() => void createInvite()}
-                    disabled={inviteBusy}
-                    style={{ width: "100%" }}
-                  >
-                    {inviteBusy ? "処理中…" : "招待URLを発行"}
-                  </button>
-                </div>
-
-                <div style={{ fontSize: 12, color: "#b9bbbe" }}>発行中の招待URL</div>
-                {invites.length === 0 ? (
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>なし</div>
-                ) : (
-                  <div className="darkScroll" style={{ display: "grid", gap: 10, maxHeight: 420, overflowY: "auto", paddingRight: 2 }}>
-                    {invites.map((inv) => {
-                      const expiresMs = new Date(inv.expires_at).getTime();
-                      const expired = Number.isFinite(expiresMs) ? expiresMs <= Date.now() : false;
-                      const maxed = Number.isFinite(inv.max_uses) ? inv.uses >= inv.max_uses : false;
-                      const inactive = expired || maxed;
-                      return (
-                      <div
-                        key={inv.code}
-                        style={{
-                          border: "1px solid #40444b",
-                          background: "#202225",
-                          borderRadius: 10,
-                          padding: "10px 12px",
-                          display: "grid",
-                          gap: 8,
-                          opacity: inactive ? 0.6 : 1,
-                        }}
-                      >
-                        <div
-                          style={{
-                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                            fontSize: 16,
-                            fontWeight: 900,
-                            wordBreak: "break-all",
-                            userSelect: "text",
-                          }}
-                          title="クリックでコピー"
-                          onClick={async () => {
-                            try {
-                              await navigator.clipboard.writeText(inviteUrlFromCode(inv.code));
-                              setToast("コピーしました");
-                            } catch {
-                              setToast("コピーできませんでした");
-                            }
-                          }}
-                        >
-                          {inviteUrlFromCode(inv.code)}
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, color: "#b9bbbe", flexWrap: "wrap" }}>
-                          <div>使用回数: {inv.uses}/{inv.max_uses}</div>
-                          <div>期限: {new Date(inv.expires_at).toLocaleString()}</div>
-                        </div>
-                        {inactive && (
-                          <div style={{ fontSize: 12, color: "#ff7a7a", fontWeight: 900 }}>
-                            {expired ? "期限切れ" : "上限到達"}
-                          </div>
-                        )}
-                        <div style={{ display: "flex", gap: 10 }}>
-                          <button
-                            onClick={async () => {
-                              try {
-                                await navigator.clipboard.writeText(inviteUrlFromCode(inv.code));
-                                setToast("コピーしました");
-                              } catch {
-                                setToast("コピーできませんでした");
-                              }
-                            }}
-                            disabled={inviteBusy}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: 8,
-                              border: "1px solid #40444b",
-                              background: "transparent",
-                              color: "#dcddde",
-                              cursor: "pointer",
-                              fontSize: 13,
-                              fontWeight: 800,
-                              width: "100%",
-                            }}
-                          >
-                            コピー
-                          </button>
-                          <button
-                            onClick={() => void deleteInvite(inv.code)}
-                            disabled={inviteBusy}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: 8,
-                              border: "none",
-                              background: "#ed4245",
-                              color: "#ffffff",
-                              cursor: "pointer",
-                              fontSize: 13,
-                              fontWeight: 900,
-                              width: "100%",
-                              opacity: inviteBusy ? 0.7 : 1,
-                            }}
-                          >
-                            削除
-                          </button>
-                        </div>
-                      </div>
-                      );
-                    })}
-                  </div>
-                )}
-                  </>
-                )}
-
-                {roomSettingsTab === "audit" && (
-                  <>
-                    <div style={{ height: 1, background: "#202225" }} />
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                      <div style={{ fontSize: 12, color: "#b9bbbe" }}>監査ログ</div>
-                      <button
-                        onClick={() => void refreshAudit()}
-                        disabled={inviteBusy}
-                        style={{
-                          padding: "6px 10px",
-                          borderRadius: 8,
-                          border: "1px solid #40444b",
-                          background: "transparent",
-                          color: "#dcddde",
-                          cursor: "pointer",
-                          fontSize: 12,
-                          fontWeight: 800,
-                          opacity: inviteBusy ? 0.7 : 1,
-                        }}
-                        title="更新"
-                      >
-                        更新
-                      </button>
-                    </div>
-                    {auditError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{auditError}</div>}
-                    {auditLogs.length === 0 ? (
-                      <div style={{ fontSize: 12, opacity: 0.8 }}>なし</div>
-                    ) : (
-                      <div
-                        className="darkScroll"
-                        style={{ display: "grid", gap: 6, maxHeight: 420, overflowY: "auto", paddingRight: 2 }}
-                      >
-                        {auditLogs.slice(0, 50).map((l) => (
-                          <div
-                            key={l.id}
-                            style={{
-                              border: "1px solid #40444b",
-                              background: "#202225",
-                              borderRadius: 10,
-                              padding: "8px 10px",
-                              display: "grid",
-                              gap: 4,
-                            }}
-                          >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12 }}>
-                              <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {l.actorDisplayName} ({l.actorId})
-                              </div>
-                              <div style={{ color: "#8e9297", flexShrink: 0 }}>{new Date(l.created_at).toLocaleString()}</div>
-                            </div>
-                            <div style={{ fontSize: 12, color: "#b9bbbe" }}>
-                              {(() => {
-                                const meta = l.meta && typeof l.meta === "object" ? (l.meta as any) : null;
-                                const label =
-                                  l.action === "room_create"
-                                    ? "room_create"
-                                    : l.action === "room_delete"
-                                      ? "room_delete"
-                                      : l.action === "room_join"
-                                        ? "room_join"
-                                        : l.action === "room_leave"
-                                          ? "room_leave"
-                                          : l.action === "room_kick"
-                                            ? "room_kick"
-                                            : l.action === "room_ban"
-                                              ? "room_ban"
-                                              : l.action === "room_unban"
-                                                ? "room_unban"
-                                                : l.action === "invite_create"
-                                                  ? "invite_create"
-                                                  : l.action === "invite_delete"
-                                                    ? "invite_delete"
-                                                    : l.action === "message_edit"
-                                                      ? "message_edit"
-                                                      : l.action === "message_delete"
-                                                        ? "message_delete"
-                                                        : l.action === "category_create"
-                                                          ? "category_create"
-                                                          : l.action === "category_delete"
-                                                            ? "category_delete"
-                                                            : l.action === "channel_create"
-                                                              ? "channel_create"
-                                                              : l.action === "channel_delete"
-                                                                ? "channel_delete"
-                                                                : l.action;
-                                const extra: string[] = [];
-                                if (meta?.name) extra.push(`name=${String(meta.name)}`);
-                                if (meta?.reason) extra.push(`reason=${String(meta.reason)}`);
-                                if (meta?.inviteCode) extra.push(`code=${String(meta.inviteCode)}`);
-                                if (meta?.channelId) extra.push(`channel=${String(meta.channelId)}`);
-                                if (meta?.byOwner) extra.push("byOwner");
-                                return `${label}${l.targetId ? ` (${l.targetId})` : ""}${extra.length ? ` - ${extra.join(" ")}` : ""}`;
-                              })()}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-
-                {roomSettingsTab === "danger" && (
-                  <>
-                    <div style={{ height: 1, background: "#202225" }} />
-                    <div style={{ fontSize: 12, color: "#b9bbbe" }}>危険</div>
-                    <button
-                      onClick={deleteRoomFromSettings}
-                      disabled={inviteBusy}
-                      style={{
-                        padding: "12px 14px",
-                        borderRadius: 12,
-                        border: "none",
-                        background: "#ed4245",
-                        color: "#ffffff",
-                        cursor: "pointer",
-                        fontWeight: 900,
-                        opacity: inviteBusy ? 0.7 : 1,
-                        width: "100%",
-                      }}
-                      title="Roomを削除"
-                    >
-                      Roomを削除
-                    </button>
-                  </>
-                )}
-              </>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {authed && confirmModal && (
-        <Modal
-          title="確認"
-          onClose={closeConfirmModal}
-          footer={
-            <>
-              <button
-                onClick={closeConfirmModal}
-                disabled={inviteBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                キャンセル
-              </button>
-              <button
-                onClick={() => {
-                  if (confirmModal.kind === "leave") void confirmLeaveRoom(confirmModal.roomId);
-                  if (confirmModal.kind === "kick") void confirmKickMember(confirmModal.roomId, confirmModal.userId);
-                  setConfirmModal(null);
-                }}
-                disabled={inviteBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#ed4245",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 900,
-                  opacity: inviteBusy ? 0.7 : 1,
-                }}
-              >
-                実行
-              </button>
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 10, color: "#dcddde" }}>
-            {confirmModal.kind === "leave" && (
-              <div style={{ fontSize: 13, lineHeight: 1.4 }}>
-                Room「{confirmModal.roomName}」から退出しますか？
-              </div>
-            )}
-            {confirmModal.kind === "kick" && (
-              <div style={{ fontSize: 13, lineHeight: 1.4 }}>
-                「{confirmModal.displayName}」をRoomから外しますか？
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {authed && joinOpen && (
-        <Modal
-          title="招待URLで参加"
-          onClose={closeJoinModal}
-          footer={
-            <>
-              <button
-                onClick={closeJoinModal}
-                disabled={joinBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                キャンセル
-              </button>
-              <button
-                onClick={() => void submitJoin()}
-                disabled={joinBusy || !extractInviteCode(joinCode)}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7289da",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 800,
-                  opacity: joinBusy || !extractInviteCode(joinCode) ? 0.7 : 1,
-                }}
-              >
-                {joinBusy ? "参加中…" : "参加"}
-              </button>
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 10 }}>
-            <label className="label">
-              招待URL（またはコード）
-              <input
-                className="input"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value)}
-                placeholder="例: https://yuiroom.net/invite/abcdef または abcdef"
-                disabled={joinBusy}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void submitJoin();
-                  if (e.key === "Escape") closeJoinModal();
-                }}
-              />
-            </label>
-            {joinError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{joinError}</div>}
-          </div>
-        </Modal>
-      )}
-
-      {authed && homeAuditOpen && (
-        <Modal
-          title="監査ログ"
-          onClose={closeHomeAudit}
-          footer={
-            <>
-              <button
-                onClick={closeHomeAudit}
-                disabled={homeAuditBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  opacity: homeAuditBusy ? 0.7 : 1,
-                }}
-              >
-                閉じる
-              </button>
-              <button
-                onClick={() => void openHomeAudit()}
-                disabled={homeAuditBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7289da",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 800,
-                  opacity: homeAuditBusy ? 0.7 : 1,
-                }}
-              >
-                更新
-              </button>
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 10, color: "#dcddde" }}>
-            {homeAuditError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{homeAuditError}</div>}
-            {homeAuditBusy ? (
-              <div style={{ color: "#8e9297", fontSize: 12 }}>読み込み中…</div>
-            ) : homeAuditLogs.length === 0 ? (
-              <div style={{ color: "#8e9297", fontSize: 12 }}>なし</div>
-            ) : (
-              <div className="darkScroll" style={{ display: "grid", gap: 6, maxHeight: 420, overflowY: "auto", paddingRight: 2 }}>
-                {homeAuditLogs.slice(0, 50).map((l) => (
-                  <div
-                    key={l.id}
-                    style={{
-                      border: "1px solid #40444b",
-                      background: "#202225",
-                      borderRadius: 10,
-                      padding: "8px 10px",
-                      display: "grid",
-                      gap: 4,
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12 }}>
-                      <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {l.actorDisplayName} ({l.actorId})
-                      </div>
-                      <div style={{ color: "#8e9297", flexShrink: 0 }}>{new Date(l.created_at).toLocaleString()}</div>
-                    </div>
-                    <div style={{ fontSize: 12, color: "#b9bbbe" }}>
-                      {(() => {
-                        const meta = l.meta && typeof l.meta === "object" ? (l.meta as any) : null;
-                        const extra: string[] = [];
-                        if (meta?.name) extra.push(`name=${String(meta.name)}`);
-                        if (meta?.reason) extra.push(`reason=${String(meta.reason)}`);
-                        if (meta?.requestId) extra.push(`request=${String(meta.requestId)}`);
-                        if (meta?.threadId) extra.push(`thread=${String(meta.threadId)}`);
-                        if (meta?.inviteCode) extra.push(`code=${String(meta.inviteCode)}`);
-                        if (meta?.channelId) extra.push(`channel=${String(meta.channelId)}`);
-                        if (meta?.byOwner) extra.push("byOwner");
-                        return `${l.action}${l.targetId ? ` (${l.targetId})` : ""}${extra.length ? ` - ${extra.join(" ")}` : ""}`;
-                      })()}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
+      <HomeAuditModal
+        open={authed && homeAuditOpen}
+        busy={homeAuditBusy}
+        error={homeAuditError}
+        logs={homeAuditLogs}
+        onClose={closeHomeAudit}
+        onRefresh={() => void openHomeAudit()}
+      />
     </div>
   );
 }

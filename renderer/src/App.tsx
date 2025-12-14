@@ -2,24 +2,35 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import "./App.css";
 import { api } from "./api";
 import type { Room, RoomTree } from "./api";
-import { ServerList } from "./ServerList";
-import { ChannelList } from "./ChannelList";
-import { MessageArea } from "./MessageArea";
-import { Modal } from "./Modal";
-import { Drawer } from "./Drawer";
-import { MemberPane } from "./MemberPane";
-import { SettingsModal } from "./modals/SettingsModal";
-import { RoomSettingsModal } from "./modals/RoomSettingsModal";
-import { BanModal } from "./modals/BanModal";
-import { ConfirmActionModal } from "./modals/ConfirmActionModal";
-import { JoinRoomModal } from "./modals/JoinRoomModal";
-import { HomeAuditModal } from "./modals/HomeAuditModal";
-import { DmPanel } from "./views/DmPanel";
+import { AuthScreen } from "./views/AuthScreen";
+import { AppOverlays } from "./views/AppOverlays";
+import { RoomView } from "./views/RoomView";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type { DmMessage, DmSearchMessage, FriendRequests, FriendUser } from "./api";
 import type { RoomMember } from "./api";
 import type { AuditLog } from "./api";
 import { realtime } from "./realtime";
+import { useAppViewportVars } from "./hooks/useAppViewportVars";
+import { useIsNarrow } from "./hooks/useIsNarrow";
+import { useLatestRef } from "./hooks/useLatestRef";
+import { useDmToastNotifications } from "./hooks/useDmToastNotifications";
+import { useHomeAutoRefresh } from "./hooks/useHomeAutoRefresh";
+import {
+  HOME_ID,
+  avatarKey,
+  displayNameKey,
+  extractInviteCode,
+  fileToPngAvatarDataUrl,
+  hasServerAvatar,
+  inviteUrlFromCode,
+  normalizeUserId,
+  readEnterKeySends,
+  readSavedUserId,
+  validateDisplayName,
+  validateUserId,
+  writeEnterKeySends,
+  writeSavedUserId,
+} from "./app/appUtils";
 
 type Mode = "login" | "register";
 
@@ -47,8 +58,6 @@ type NotificationItem =
       peer: { userId: string; displayName: string; hasAvatar: boolean };
     };
 
-const USER_ID_REGEX = /^[a-z0-9_-]{3,32}$/;
-
 type UserActionStatus =
   | { kind: "self" }
   | { kind: "friend"; friend: FriendUser }
@@ -56,182 +65,9 @@ type UserActionStatus =
   | { kind: "incoming"; requestId: string }
   | { kind: "none" };
 
-function normalizeUserId(v: string) {
-  return v.trim().toLowerCase();
-}
-
-function validateUserId(userId: string): string | null {
-  const v = normalizeUserId(userId);
-  if (!v) return "ユーザーIDを入力してね";
-  if (!USER_ID_REGEX.test(v)) return "ユーザーIDは a-z 0-9 _ - のみ、3〜32文字だよ（ドット不可）";
-  return null;
-}
-
-function validateDisplayName(name: string): string | null {
-  const v = name.trim();
-  if (!v) return "ユーザー名を入力してね";
-  if (v.length > 32) return "ユーザー名は32文字までにしてね";
-  if (/[^\S\r\n]*[\r\n]+[^\S\r\n]*/.test(v)) return "改行は使えないよ";
-  return null;
-}
-
-function inviteBaseOrigin(): string {
-  try {
-    return new URL(api.base()).origin;
-  } catch {
-    try {
-      return window.location.origin;
-    } catch {
-      return "";
-    }
-  }
-}
-
-function inviteUrlFromCode(code: string): string {
-  const origin = inviteBaseOrigin();
-  const c = String(code || "").trim();
-  return origin ? `${origin}/invite/${encodeURIComponent(c)}` : `/invite/${encodeURIComponent(c)}`;
-}
-
-function extractInviteCode(input: string): string {
-  const v = String(input ?? "").trim();
-  if (!v) return "";
-  if (/^[a-z0-9]{6,32}$/i.test(v)) return v.toLowerCase();
-
-  const m1 = /(?:^|\/)(?:invite|invites)\/([a-z0-9]{6,32})(?:$|[/?#])/i.exec(v);
-  if (m1?.[1]) return String(m1[1]).toLowerCase();
-
-  const m2 = /(?:^|[?&#])code=([a-z0-9]{6,32})(?:$|[&#])/i.exec(v);
-  if (m2?.[1]) return String(m2[1]).toLowerCase();
-
-  try {
-    const u = new URL(v);
-    const q = u.searchParams.get("code") ?? u.searchParams.get("invite") ?? "";
-    if (q && /^[a-z0-9]{6,32}$/i.test(q)) return q.toLowerCase();
-    const parts = u.pathname.split("/").filter(Boolean);
-    const idx = parts.findIndex((p) => p === "invite" || p === "invites");
-    const cand = idx >= 0 ? parts[idx + 1] : parts[parts.length - 1];
-    if (cand && /^[a-z0-9]{6,32}$/i.test(cand)) return cand.toLowerCase();
-  } catch {
-    // ignore
-  }
-
-  return "";
-}
-
-function displayNameKey(userId: string) {
-  return `yuiroom.displayName:${userId}`;
-}
-
-function avatarKey(userId: string) {
-  return `yuiroom.avatar:${userId}`;
-}
-
-const SAVED_USER_ID_KEY = "yuiroom.savedUserId";
-
-function readSavedUserId(): string {
-  try {
-    return localStorage.getItem(SAVED_USER_ID_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeSavedUserId(userId: string | null) {
-  try {
-    const v = userId ? normalizeUserId(userId) : "";
-    if (v) localStorage.setItem(SAVED_USER_ID_KEY, v);
-    else localStorage.removeItem(SAVED_USER_ID_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-const HOME_ID = "__home__";
-
-const ENTER_KEY_SENDS_KEY = "yr_enter_key_sends_v1";
-
-function readEnterKeySends(): boolean {
-  try {
-    const v = localStorage.getItem(ENTER_KEY_SENDS_KEY);
-    if (v === "0") return false;
-    if (v === "1") return true;
-  } catch {
-    // ignore
-  }
-  return true; // default: Enter=send, Shift+Enter=newline
-}
-
-function writeEnterKeySends(v: boolean) {
-  try {
-    localStorage.setItem(ENTER_KEY_SENDS_KEY, v ? "1" : "0");
-  } catch {
-    // ignore
-  }
-}
-
-async function hasServerAvatar(userId: string): Promise<boolean> {
-  try {
-    const res = await fetch(api.userAvatarUrl(userId), { method: "HEAD" });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Failed to read file"));
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function fileToPngAvatarDataUrl(file: File, maxSizePx = 256): Promise<string> {
-  const src = await fileToDataUrl(file);
-
-  const img = new Image();
-  const loaded = new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error("Unsupported image format"));
-  });
-  img.src = src;
-  await loaded;
-
-  function toPng(max: number) {
-    const w = img.naturalWidth || img.width || 0;
-    const h = img.naturalHeight || img.height || 0;
-    if (!w || !h) throw new Error("Unsupported image format");
-    const scale = Math.min(1, max / Math.max(w, h));
-    const outW = Math.max(1, Math.round(w * scale));
-    const outH = Math.max(1, Math.round(h * scale));
-
-    const canvas = document.createElement("canvas");
-    canvas.width = outW;
-    canvas.height = outH;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas not supported");
-    ctx.drawImage(img, 0, 0, outW, outH);
-    return canvas.toDataURL("image/png");
-  }
-
-  // Try to ensure the resulting dataUrl stays under backend limit (2MB).
-  let max = maxSizePx;
-  for (let i = 0; i < 4; i++) {
-    const dataUrl = toPng(max);
-    const comma = dataUrl.indexOf(",");
-    const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : "";
-    const approxBytes = Math.floor((b64.length * 3) / 4);
-    if (approxBytes <= 2 * 1024 * 1024) return dataUrl;
-    max = Math.max(64, Math.floor(max * 0.75));
-  }
-  throw new Error("avatar_too_large");
-}
-
 export default function App() {
   const [mode, setMode] = useState<Mode>("login");
-  const [isNarrow, setIsNarrow] = useState(false);
+  const isNarrow = useIsNarrow(900);
   const [mobileDrawer, setMobileDrawer] = useState<null | "rooms" | "nav" | "members">(null);
   const pendingInviteRef = useRef<string | null>(null);
   const [currentUserHasServerAvatar, setCurrentUserHasServerAvatar] = useState(false);
@@ -368,11 +204,10 @@ export default function App() {
 
   const [unreadByChannelId, setUnreadByChannelId] = useState<Record<string, boolean>>({});
   const lastReadRef = useRef<Record<string, string>>({});
-  const selectedChannelIdRef = useRef<string | null>(null);
-  const selectedRoomIdRef = useRef<string | null>(null);
-  const selectedDmThreadIdRef = useRef<string | null>(null);
-  const dmToastUnsubsRef = useRef<Map<string, () => void>>(new Map());
   const lastToastRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+  const selectedChannelIdRef = useLatestRef(selectedChannelId);
+  const selectedRoomIdRef = useLatestRef(selectedRoomId);
+  const selectedDmThreadIdRef = useLatestRef(selectedDmThreadId);
 
   const [confirmModal, setConfirmModal] = useState<
     | null
@@ -499,30 +334,7 @@ export default function App() {
     }
   }, [selectedRoomId]);
 
-  useEffect(() => {
-    selectedChannelIdRef.current = selectedChannelId;
-  }, [selectedChannelId]);
-
-  useEffect(() => {
-    selectedRoomIdRef.current = selectedRoomId;
-  }, [selectedRoomId]);
-
-  useEffect(() => {
-    selectedDmThreadIdRef.current = selectedDmThreadId;
-  }, [selectedDmThreadId]);
-
-  useEffect(() => {
-    function update() {
-      try {
-        setIsNarrow(window.matchMedia("(max-width: 900px)").matches);
-      } catch {
-        setIsNarrow(false);
-      }
-    }
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
+  useAppViewportVars();
 
   useEffect(() => {
     try {
@@ -546,40 +358,6 @@ export default function App() {
     setJoinCode(inviteUrlFromCode(code));
     setJoinError(null);
   }, [authed]);
-
-  useEffect(() => {
-    let raf = 0;
-    function apply() {
-      if (raf) return;
-      raf = window.requestAnimationFrame(() => {
-        raf = 0;
-        const vv = (window as any).visualViewport as VisualViewport | undefined;
-        const h = Math.round((vv?.height ?? window.innerHeight) || window.innerHeight);
-        const top = Math.round(vv?.offsetTop ?? 0);
-        const left = Math.round(vv?.offsetLeft ?? 0);
-        const occludedBottom = Math.max(0, Math.round(window.innerHeight - (vv?.height ?? window.innerHeight) - (vv?.offsetTop ?? 0)));
-        document.documentElement.style.setProperty("--app-height", `${h}px`);
-        document.documentElement.style.setProperty("--app-offset-top", `${top}px`);
-        document.documentElement.style.setProperty("--app-offset-left", `${left}px`);
-        document.documentElement.style.setProperty("--app-occluded-bottom", `${occludedBottom}px`);
-      });
-    }
-
-    apply();
-    window.addEventListener("resize", apply);
-    window.addEventListener("orientationchange", apply);
-    const vv = (window as any).visualViewport as VisualViewport | undefined;
-    vv?.addEventListener("resize", apply);
-    vv?.addEventListener("scroll", apply);
-
-    return () => {
-      if (raf) window.cancelAnimationFrame(raf);
-      window.removeEventListener("resize", apply);
-      window.removeEventListener("orientationchange", apply);
-      vv?.removeEventListener("resize", apply);
-      vv?.removeEventListener("scroll", apply);
-    };
-  }, []);
 
   const dmReactionEmojis = ["👍", "❤️", "😂", "🎉", "😮", "😢", "😡", "🙏"];
 
@@ -763,87 +541,18 @@ export default function App() {
     };
   }, [authed, tree?.room?.id]);
 
-  useEffect(() => {
-    if (!authed || !currentUserId) return;
-
-    let cancelled = false;
-
-    function maybeToast(key: string, msg: string) {
-      const now = Date.now();
-      if (lastToastRef.current.key === key && now - lastToastRef.current.at < 1500) return;
-      lastToastRef.current = { key, at: now };
-      setToast(msg);
-    }
-
-    function pushNotification(n: NotificationItem) {
-      setNotifications((prev) => {
-        if (prev.some((x) => x.id === n.id)) return prev;
-        const next = [n, ...prev];
-        return next.slice(0, 20);
-      });
-    }
-
-    async function refreshDmToastSubscriptions() {
-      try {
-        const threads = await api.listDmThreads();
-        if (cancelled) return;
-
-        const nextIds = new Set(threads.map((t) => t.threadId));
-
-        // unsubscribe removed
-        for (const [id, unsub] of dmToastUnsubsRef.current.entries()) {
-          if (nextIds.has(id)) continue;
-          try { unsub(); } catch {}
-          dmToastUnsubsRef.current.delete(id);
-        }
-
-        // subscribe new
-        for (const t of threads) {
-          const threadId = t.threadId;
-          if (dmToastUnsubsRef.current.has(threadId)) continue;
-          const unsub = realtime.subscribeDmMessage(threadId, (msg: any) => {
-            const authorId = String(msg?.author_id ?? "");
-            if (authorId === currentUserId) return;
-            if (selectedRoomIdRef.current === HOME_ID && selectedDmThreadIdRef.current === threadId) return;
-            const author = String(msg?.author ?? t.displayName ?? "DM");
-            const text = String(msg?.content ?? "").trim();
-            const snippet = text.length > 60 ? `${text.slice(0, 60)}…` : text;
-            const msgId = String(msg?.id ?? "");
-            maybeToast(`dm:${threadId}:${msgId}`, `DM — ${author}: ${snippet}`);
-            if (msgId) {
-              pushNotification({
-                id: `dm:${threadId}:${msgId}`,
-                kind: "dm",
-                title: `DM — ${t.displayName}`,
-                body: `${author}: ${snippet || "(本文なし)"}`,
-                at: Date.now(),
-                threadId,
-                messageId: msgId,
-                peer: { userId: t.userId, displayName: t.displayName, hasAvatar: !!t.hasAvatar },
-              });
-            }
-          });
-          dmToastUnsubsRef.current.set(threadId, unsub);
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    void refreshDmToastSubscriptions();
-    const unsubHome = realtime.subscribeHome(() => {
-      void refreshDmToastSubscriptions();
-    });
-
-    return () => {
-      cancelled = true;
-      try { unsubHome(); } catch {}
-      for (const unsub of dmToastUnsubsRef.current.values()) {
-        try { unsub(); } catch {}
-      }
-      dmToastUnsubsRef.current.clear();
-    };
-  }, [authed, currentUserId, displayName]);
+  useDmToastNotifications({
+    authed,
+    currentUserId,
+    apiListDmThreads: api.listDmThreads,
+    subscribeDmMessage: realtime.subscribeDmMessage,
+    subscribeHome: realtime.subscribeHome,
+    homeId: HOME_ID,
+    selectedRoomIdRef,
+    selectedDmThreadIdRef,
+    setToast,
+    setNotifications,
+  });
 
   function selectChannelAndMarkRead(channelId: string) {
     setSelectedChannelId(channelId);
@@ -884,20 +593,13 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    if (!authed) return;
-    if (selectedRoomId !== HOME_ID) return;
-    void loadHome();
-  }, [authed, selectedRoomId]);
-
-  useEffect(() => {
-    if (!authed) return;
-    if (selectedRoomId !== HOME_ID) return;
-    const unsub = realtime.subscribeHome(() => {
-      void loadHome();
-    });
-    return unsub;
-  }, [authed, selectedRoomId]);
+  useHomeAutoRefresh({
+    authed,
+    selectedRoomId,
+    homeId: HOME_ID,
+    loadHome,
+    subscribeHome: realtime.subscribeHome,
+  });
 
   useEffect(() => {
     if (!authed) return;
@@ -2006,1284 +1708,122 @@ export default function App() {
   return (
     <div className={`app ${authed ? "authed" : ""}`}>
       {authed ? (
-        // Discord風レイアウト
-        <div
-          style={{
-            display: "flex",
-            position: "fixed",
-            top: "var(--app-offset-top)",
-            left: "var(--app-offset-left)",
-            height: "var(--app-height)",
-            width: "calc(100vw - var(--app-offset-left))",
-            background: "#36393f",
-            overflowX: "hidden",
-            paddingBottom: "var(--app-occluded-bottom)",
-            boxSizing: "border-box",
-          }}
-        >
-          {!isNarrow && rooms && (
-            <ServerList
-              rooms={rooms}
-              selectedRoomId={selectedRoomId}
-              onSelectRoom={setSelectedRoomId}
-              onRequestCreateRoom={roomsLoading ? undefined : openCreateRoom}
-              homeId={HOME_ID}
-            />
-          )}
-          {selectedRoomId === HOME_ID ? (
-            !isNarrow ? (
-            <div
-              style={{
-                width: 260,
-                background: "#2f3136",
-                borderRight: "1px solid #202225",
-                height: "var(--app-height)",
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              <div style={{ padding: 14, borderBottom: "1px solid #202225" }}>
-                <div style={{ color: "#ffffff", fontWeight: 900, fontSize: 14, marginBottom: 10 }}>
-                  ホーム
-                </div>
-                <button
-                  onClick={openAddFriend}
-                  style={{
-                    width: "100%",
-                    padding: "10px 10px",
-                    borderRadius: 8,
-                    border: "none",
-                    background: "#7289da",
-                    color: "#ffffff",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                    fontSize: 12,
-                  }}
-                  title="フレンド申請"
-                >
-                  フレンドを追加する
-                </button>
-                <button
-                  onClick={() => void openHomeAudit()}
-                  disabled={homeAuditBusy}
-                  style={{
-                    width: "100%",
-                    padding: "10px 10px",
-                    borderRadius: 8,
-                    border: "1px solid #40444b",
-                    background: "transparent",
-                    color: "#dcddde",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                    fontSize: 12,
-                    marginTop: 10,
-                    opacity: homeAuditBusy ? 0.7 : 1,
-                  }}
-                  title="監査ログ"
-                >
-                  監査ログ
-                </button>
-                {homeError && !addFriendOpen && (
-                  <div style={{ color: "#ff7a7a", fontSize: 12, marginTop: 10 }}>{homeError}</div>
-                )}
-              </div>
-
-              <div className="darkScroll" style={{ flex: 1, overflowY: "auto", padding: 10, display: "grid", gap: 14 }}>
-                <div>
-                  <div style={{ color: "#8e9297", fontSize: 12, fontWeight: 900, marginBottom: 8 }}>
-                    フレンド
-                  </div>
-                  {homeLoading ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>読み込み中…</div>
-                  ) : friends.length === 0 ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>まだフレンドがいないよ</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 6 }}>
-                      {friends.map((f) => (
-                        <div key={f.userId} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                          <button
-                            onClick={() => void openDmWith(f)}
-                            style={{
-                              width: "100%",
-                              textAlign: "left",
-                              padding: "10px 10px",
-                              borderRadius: 10,
-                              border: "1px solid #40444b",
-                              background: "transparent",
-                              color: "#dcddde",
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 10,
-                              flex: 1,
-                              minWidth: 0,
-                            }}
-                            title="DMを開く"
-                          >
-                            <div
-                              style={{
-                                width: 26,
-                                height: 26,
-                                borderRadius: "50%",
-                                background: "#7289da",
-                                overflow: "hidden",
-                                flexShrink: 0,
-                                display: "grid",
-                                placeItems: "center",
-                                color: "#ffffff",
-                                fontWeight: 900,
-                                fontSize: 12,
-                              }}
-                            >
-                              {f.hasAvatar ? (
-                                <img
-                                  src={api.userAvatarUrl(f.userId)}
-                                  alt="avatar"
-                                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                                />
-                              ) : (
-                                f.displayName?.[0]?.toUpperCase?.() ?? "?"
-                              )}
-                            </div>
-                            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {f.displayName}
-                            </div>
-                          </button>
-                          <button
-                            onClick={() => void deleteFriend(f.userId, f.displayName)}
-                            style={{
-                              padding: "10px 10px",
-                              borderRadius: 10,
-                              border: "1px solid #40444b",
-                              background: "transparent",
-                              color: "#dcddde",
-                              cursor: "pointer",
-                              flexShrink: 0,
-                              fontSize: 12,
-                            }}
-                            title="フレンド削除"
-                          >
-                            削除
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <div style={{ color: "#8e9297", fontSize: 12, fontWeight: 900, marginBottom: 8 }}>
-                    申請（受信）
-                  </div>
-                  {homeLoading ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>読み込み中…</div>
-                  ) : requests.incoming.length === 0 ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>受信申請はないよ</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 6 }}>
-                      {requests.incoming.map((r) => (
-                        <div
-                          key={r.id}
-                          style={{
-                            padding: "10px 10px",
-                            borderRadius: 10,
-                            border: "1px solid #40444b",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: 10,
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                            <div
-                              style={{
-                                width: 26,
-                                height: 26,
-                                borderRadius: "50%",
-                                background: "#7289da",
-                                overflow: "hidden",
-                                flexShrink: 0,
-                                display: "grid",
-                                placeItems: "center",
-                                color: "#ffffff",
-                                fontWeight: 900,
-                                fontSize: 12,
-                              }}
-                            >
-                              {r.hasAvatar ? (
-                                <img
-                                  src={api.userAvatarUrl(r.userId)}
-                                  alt="avatar"
-                                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                                />
-                              ) : (
-                                r.displayName?.[0]?.toUpperCase?.() ?? "?"
-                              )}
-                            </div>
-                            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {r.displayName}
-                            </div>
-                          </div>
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button
-                              onClick={() => void acceptRequest(r.id)}
-                              style={{
-                                padding: "8px 10px",
-                                borderRadius: 8,
-                                border: "none",
-                                background: "#43b581",
-                                color: "#ffffff",
-                                cursor: "pointer",
-                                fontWeight: 900,
-                                fontSize: 12,
-                              }}
-                            >
-                              承認
-                            </button>
-                            <button
-                              onClick={() => void rejectRequest(r.id)}
-                              style={{
-                                padding: "8px 10px",
-                                borderRadius: 8,
-                                border: "none",
-                                background: "#f04747",
-                                color: "#ffffff",
-                                cursor: "pointer",
-                                fontWeight: 900,
-                                fontSize: 12,
-                              }}
-                            >
-                              拒否
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <div style={{ color: "#8e9297", fontSize: 12, fontWeight: 900, marginBottom: 8 }}>
-                    申請（送信）
-                  </div>
-                  {homeLoading ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>読み込み中…</div>
-                  ) : requests.outgoing.length === 0 ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>送信中の申請はないよ</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 6 }}>
-                      {requests.outgoing.map((r) => (
-                        <div
-                          key={r.id}
-                          style={{
-                            padding: "10px 10px",
-                            borderRadius: 10,
-                            border: "1px solid #40444b",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 10,
-                            color: "#dcddde",
-                          }}
-                          title="承認待ち"
-                        >
-                          <div
-                            style={{
-                              width: 26,
-                              height: 26,
-                              borderRadius: "50%",
-                              background: "#7289da",
-                              overflow: "hidden",
-                              flexShrink: 0,
-                              display: "grid",
-                              placeItems: "center",
-                              color: "#ffffff",
-                              fontWeight: 900,
-                              fontSize: 12,
-                            }}
-                          >
-                            {r.hasAvatar ? (
-                              <img
-                                src={api.userAvatarUrl(r.userId)}
-                                alt="avatar"
-                                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                              />
-                            ) : (
-                              r.displayName?.[0]?.toUpperCase?.() ?? "?"
-                            )}
-                          </div>
-                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {r.displayName}
-                          </div>
-                          <div style={{ marginLeft: "auto", color: "#8e9297", fontSize: 12, fontWeight: 900 }}>
-                            承認待ち
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-            ) : null
-          ) : !isNarrow && tree ? (
-            <ChannelList
-              tree={tree}
-              selectedChannelId={selectedChannelId}
-              onSelectChannel={selectChannelAndMarkRead}
-              unreadByChannelId={unreadByChannelId}
-              notifications={notifications}
-              onClearNotifications={() => setNotifications([])}
-              onDismissNotification={(id) => setNotifications((prev) => prev.filter((n) => n.id !== id))}
-              onOpenNotification={openNotification}
-              onRequestCreateCategory={
-                treeLoading
-                  ? undefined
-                  : tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                    ? openCreateCategory
-                    : undefined
-              }
-              onOpenRoomSettings={
-                tree.room.owner_id
-                  ? openInviteModal
-                  : undefined
-              }
-              onRequestCreateChannel={
-                treeLoading
-                  ? undefined
-                  : tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                    ? openCreateChannel
-                    : undefined
-              }
-              onRequestDeleteCategory={
-                tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                  ? openDeleteCategory
-                  : undefined
-              }
-              onRequestDeleteChannel={
-                tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                  ? openDeleteChannel
-                  : undefined
-              }
-              currentUserName={displayName || currentUserId || "user"}
-              currentUserAvatarUrl={currentUserAvatarUrl}
-              onOpenSettings={currentUserId ? openSettings : undefined}
-            />
-          ) : null}
-
-          {selectedRoomId === HOME_ID ? (
-            <DmPanel
-              selectedDmPeerName={selectedDmPeerName}
-              selectedDmThreadId={selectedDmThreadId}
-              enterKeySends={enterKeySends}
-              dmListRef={dmListRef}
-              dmLoading={dmLoading}
-              dmError={dmError}
-              dmMessages={dmMessages}
-              dmHighlightId={dmHighlightId}
-              dmReactionEmojis={dmReactionEmojis}
-              dmReactionPickerFor={dmReactionPickerFor}
-              setDmReactionPickerFor={setDmReactionPickerFor}
-              toggleDmReaction={toggleDmReaction}
-              pickDmReaction={pickDmReaction}
-              dmText={dmText}
-              setDmText={setDmText}
-              dmSending={dmSending}
-              sendDm={sendDm}
-              openDmSearch={openDmSearch}
-              dmSearchOpen={dmSearchOpen}
-              closeDmSearch={closeDmSearch}
-              dmSearchBusy={dmSearchBusy}
-              dmSearchQ={dmSearchQ}
-              setDmSearchQ={setDmSearchQ}
-              dmSearchError={dmSearchError}
-              dmSearchItems={dmSearchItems}
-              dmSearchHasMore={dmSearchHasMore}
-              runDmSearch={runDmSearch}
-              dmSearchInputRef={dmSearchInputRef}
-              onPickSearchResult={(messageId) => {
-                if (!selectedDmThreadId) return;
-                setFocusDmMessage((prev) => ({
-                  threadId: selectedDmThreadId,
-                  messageId,
-                  nonce: (prev?.nonce ?? 0) + 1,
-                }));
-                setDmSearchOpen(false);
-              }}
-            />
-          ) : (
-            <div style={{ display: "flex", flex: 1, height: "var(--app-height)" }}>
-              <MessageArea
-                roomId={tree?.room?.id ?? null}
-                selectedChannelId={selectedChannelId}
-                selectedChannelName={selectedChannelName}
-                onAuthorClick={({ userId, displayName }) => openUserActions(userId, { displayName })}
-                currentUserId={currentUserId}
-                canModerate={!!(tree?.room.owner_id && currentUserId && tree.room.owner_id === currentUserId)}
-                mentionCandidates={memberPane.map((m) => ({ userId: m.userId, displayName: m.displayName }))}
-                enterKeySends={enterKeySends}
-                focusMessageId={focusMessage?.messageId ?? null}
-                focusMessageNonce={focusMessage?.nonce ?? 0}
-                onJumpToMessage={({ channelId, messageId }) => {
-                  setFocusMessage((prev) => ({ messageId, nonce: (prev?.nonce ?? 0) + 1 }));
-                  selectChannelAndMarkRead(channelId);
-                }}
-              />
-              {!isNarrow && (
-                <MemberPane
-                  members={memberPane}
-                  loading={memberPaneLoading}
-                  error={memberPaneError}
-                  onMemberClick={(m) => openUserActions(m.userId, { displayName: m.displayName, hasAvatar: m.hasAvatar })}
-                />
-              )}
-            </div>
-          )}
-
-          {authed && isNarrow && (
-            <div style={{ position: "fixed", top: 10, left: 10, zIndex: 1150, display: "flex", gap: 8 }}>
-              <button
-                type="button"
-                onClick={() => setMobileDrawer("rooms")}
-                style={{
-                  border: "1px solid #40444b",
-                  background: "#202225",
-                  color: "#dcddde",
-                  borderRadius: 999,
-                  padding: "10px 12px",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 900,
-                  boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
-                }}
-                aria-label="ルーム"
-                title="ルーム"
-              >
-                ルーム
-              </button>
-              <button
-                type="button"
-                onClick={() => setMobileDrawer("nav")}
-                disabled={!selectedRoomId}
-                style={{
-                  border: "1px solid #40444b",
-                  background: "#202225",
-                  color: "#dcddde",
-                  borderRadius: 999,
-                  padding: "10px 12px",
-                  cursor: !selectedRoomId ? "not-allowed" : "pointer",
-                  fontSize: 12,
-                  fontWeight: 900,
-                  opacity: !selectedRoomId ? 0.6 : 1,
-                  boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
-                }}
-                aria-label={selectedRoomId === HOME_ID ? "ホーム" : "チャンネル"}
-                title={selectedRoomId === HOME_ID ? "ホーム" : "チャンネル"}
-              >
-                {selectedRoomId === HOME_ID ? "ホーム" : "チャンネル"}
-              </button>
-              {selectedRoomId !== HOME_ID && (
-                <button
-                  type="button"
-                  onClick={() => setMobileDrawer("members")}
-                  style={{
-                    border: "1px solid #40444b",
-                    background: "#202225",
-                    color: "#dcddde",
-                    borderRadius: 999,
-                    padding: "10px 12px",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    fontWeight: 900,
-                    boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
-                  }}
-                  aria-label="メンバー"
-                  title="メンバー"
-                >
-                  メンバー
-                </button>
-              )}
-            </div>
-          )}
-
-          {authed && isNarrow && mobileDrawer === "rooms" && (
-            <Drawer title="ルーム" onClose={() => setMobileDrawer(null)} side="left" width={340}>
-              <div style={{ padding: 12, display: "grid", gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileDrawer(null);
-                    setSelectedRoomId(HOME_ID);
-                  }}
-                  style={{
-                    width: "100%",
-                    textAlign: "left",
-                    padding: "12px 12px",
-                    borderRadius: 12,
-                    border: "1px solid #40444b",
-                    background: selectedRoomId === HOME_ID ? "#40444b" : "transparent",
-                    color: "#dcddde",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                  }}
-                >
-                  ホーム（フレンド/DM）
-                </button>
-
-                {(rooms ?? []).map((r) => (
-                  <button
-                    key={r.id}
-                    type="button"
-                    onClick={() => {
-                      setMobileDrawer(null);
-                      setSelectedRoomId(r.id);
-                    }}
-                    style={{
-                      width: "100%",
-                      textAlign: "left",
-                      padding: "12px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #40444b",
-                      background: selectedRoomId === r.id ? "#40444b" : "transparent",
-                      color: "#dcddde",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 10,
-                    }}
-                    title={r.name}
-                  >
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
-                    {selectedRoomId === r.id && <span style={{ color: "#8e9297", fontSize: 12 }}>表示中</span>}
-                  </button>
-                ))}
-
-                <div style={{ height: 1, background: "#202225", margin: "6px 0" }} />
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileDrawer(null);
-                    openCreateRoom();
-                  }}
-                  disabled={roomsLoading}
-                  style={{
-                    width: "100%",
-                    padding: "12px 12px",
-                    borderRadius: 12,
-                    border: "none",
-                    background: "#7289da",
-                    color: "#ffffff",
-                    cursor: roomsLoading ? "not-allowed" : "pointer",
-                    fontWeight: 900,
-                    opacity: roomsLoading ? 0.7 : 1,
-                  }}
-                >
-                  ルーム作成
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileDrawer(null);
-                    openJoinModal();
-                  }}
-                  disabled={roomsLoading}
-                  style={{
-                    width: "100%",
-                    padding: "12px 12px",
-                    borderRadius: 12,
-                    border: "1px solid #40444b",
-                    background: "transparent",
-                    color: "#dcddde",
-                    cursor: roomsLoading ? "not-allowed" : "pointer",
-                    fontWeight: 900,
-                    opacity: roomsLoading ? 0.7 : 1,
-                  }}
-                >
-                  招待URLで参加
-                </button>
-              </div>
-            </Drawer>
-          )}
-
-          {authed && isNarrow && mobileDrawer === "nav" && (
-            <Drawer
-              title={selectedRoomId === HOME_ID ? "ホーム" : tree?.room?.name ? `# ${tree.room.name}` : "チャンネル"}
-              onClose={() => setMobileDrawer(null)}
-              side="left"
-              width={360}
-            >
-              {selectedRoomId === HOME_ID ? (
-                <div style={{ padding: 12, display: "grid", gap: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMobileDrawer(null);
-                        if (currentUserId) openSettings();
-                      }}
-                      style={{
-                        border: "1px solid #40444b",
-                        background: "transparent",
-                        color: "#dcddde",
-                        borderRadius: 12,
-                        padding: "10px 12px",
-                        cursor: currentUserId ? "pointer" : "not-allowed",
-                        fontWeight: 900,
-                        width: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        opacity: currentUserId ? 1 : 0.6,
-                      }}
-                      disabled={!currentUserId}
-                      title="設定"
-                      aria-label="設定"
-                    >
-                      <div
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: "50%",
-                          background: "#7289da",
-                          overflow: "hidden",
-                          flexShrink: 0,
-                          display: "grid",
-                          placeItems: "center",
-                          color: "#ffffff",
-                          fontWeight: 900,
-                          fontSize: 12,
-                        }}
-                      >
-                        {avatarDataUrl ? (
-                          <img src={avatarDataUrl} alt="me" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                        ) : (
-                          (displayName || currentUserId || "U")[0]?.toUpperCase?.() ?? "U"
-                        )}
-                      </div>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {displayName || currentUserId || "user"}
-                        </div>
-                        <div style={{ color: "#8e9297", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {currentUserId ? `@${currentUserId}` : ""}
-                        </div>
-                      </div>
-                      <div style={{ marginLeft: "auto", color: "#8e9297", fontSize: 12, fontWeight: 900 }}>設定</div>
-                    </button>
-                  </div>
-
-                  {notifications.length > 0 && (
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <div style={{ color: "#8e9297", fontSize: 12, fontWeight: 900 }}>通知</div>
-                        <button
-                          type="button"
-                          onClick={() => setNotifications([])}
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            color: "#8e9297",
-                            cursor: "pointer",
-                            fontSize: 12,
-                            fontWeight: 900,
-                            padding: 0,
-                          }}
-                        >
-                          クリア
-                        </button>
-                      </div>
-                      {notifications.slice(0, 6).map((n) => (
-                        <button
-                          key={n.id}
-                          type="button"
-                          onClick={() => {
-                            setMobileDrawer(null);
-                            openNotification(n.id);
-                          }}
-                          style={{
-                            width: "100%",
-                            textAlign: "left",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #40444b",
-                            background: "transparent",
-                            color: "#dcddde",
-                            cursor: "pointer",
-                            display: "grid",
-                            gap: 4,
-                          }}
-                          title={n.title}
-                        >
-                          <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {n.title}
-                          </div>
-                          <div style={{ color: "#b9bbbe", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {n.body}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMobileDrawer(null);
-                      openAddFriend();
-                    }}
-                    style={{
-                      width: "100%",
-                      padding: "12px 12px",
-                      borderRadius: 12,
-                      border: "none",
-                      background: "#7289da",
-                      color: "#ffffff",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                    }}
-                  >
-                    フレンドを追加
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMobileDrawer(null);
-                      void openHomeAudit();
-                    }}
-                    disabled={homeAuditBusy}
-                    style={{
-                      width: "100%",
-                      padding: "12px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #40444b",
-                      background: "transparent",
-                      color: "#dcddde",
-                      cursor: homeAuditBusy ? "not-allowed" : "pointer",
-                      fontWeight: 900,
-                      opacity: homeAuditBusy ? 0.7 : 1,
-                    }}
-                  >
-                    監査ログ
-                  </button>
-
-                  <div style={{ color: "#8e9297", fontSize: 12, fontWeight: 900 }}>フレンド</div>
-                  {homeLoading ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>読み込み中…</div>
-                  ) : friends.length === 0 ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>まだフレンドがいないよ</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 8 }}>
-                      {friends.map((f) => (
-                        <div
-                          key={f.userId}
-                          style={{
-                            display: "flex",
-                            gap: 8,
-                            alignItems: "center",
-                            border: "1px solid #40444b",
-                            borderRadius: 12,
-                            padding: "10px 10px",
-                            background: "transparent",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setMobileDrawer(null);
-                              void openDmWith(f);
-                            }}
-                            style={{
-                              border: "none",
-                              background: "transparent",
-                              color: "#dcddde",
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 10,
-                              flex: 1,
-                              minWidth: 0,
-                              padding: 0,
-                              textAlign: "left",
-                            }}
-                            title="DMを開く"
-                          >
-                            <div
-                              style={{
-                                width: 28,
-                                height: 28,
-                                borderRadius: "50%",
-                                background: "#7289da",
-                                overflow: "hidden",
-                                flexShrink: 0,
-                                display: "grid",
-                                placeItems: "center",
-                                color: "#ffffff",
-                                fontWeight: 900,
-                                fontSize: 12,
-                              }}
-                            >
-                              {f.hasAvatar ? (
-                                <img
-                                  src={api.userAvatarUrl(f.userId)}
-                                  alt="avatar"
-                                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                                />
-                              ) : (
-                                f.displayName?.[0]?.toUpperCase?.() ?? "?"
-                              )}
-                            </div>
-                            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {f.displayName}
-                            </div>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setMobileDrawer(null);
-                              openUserActions(f.userId, { displayName: f.displayName, hasAvatar: f.hasAvatar });
-                            }}
-                            style={{
-                              border: "1px solid #40444b",
-                              background: "transparent",
-                              color: "#8e9297",
-                              cursor: "pointer",
-                              borderRadius: 10,
-                              padding: "8px 10px",
-                              fontSize: 12,
-                              fontWeight: 900,
-                              flexShrink: 0,
-                            }}
-                            title="ユーザー"
-                            aria-label="ユーザー"
-                          >
-                            …
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div style={{ color: "#8e9297", fontSize: 12, fontWeight: 900, marginTop: 8 }}>申請</div>
-                  {(requests.incoming.length === 0 && requests.outgoing.length === 0) ? (
-                    <div style={{ color: "#8e9297", fontSize: 12 }}>申請はないよ</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {requests.incoming.map((r) => (
-                        <div key={r.id} style={{ border: "1px solid #40444b", borderRadius: 12, padding: 12 }}>
-                          <div style={{ fontWeight: 900, marginBottom: 8 }}>{r.displayName}</div>
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button
-                              type="button"
-                              onClick={() => void acceptRequest(r.id)}
-                              style={{
-                                flex: 1,
-                                padding: "10px 10px",
-                                borderRadius: 10,
-                                border: "none",
-                                background: "#3ba55c",
-                                color: "#fff",
-                                fontWeight: 900,
-                                cursor: "pointer",
-                              }}
-                            >
-                              承認
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void rejectRequest(r.id)}
-                              style={{
-                                flex: 1,
-                                padding: "10px 10px",
-                                borderRadius: 10,
-                                border: "none",
-                                background: "#ed4245",
-                                color: "#fff",
-                                fontWeight: 900,
-                                cursor: "pointer",
-                              }}
-                            >
-                              拒否
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                      {requests.outgoing.map((r) => (
-                        <div key={r.id} style={{ border: "1px solid #40444b", borderRadius: 12, padding: 12 }}>
-                          <div style={{ fontWeight: 900, marginBottom: 4 }}>{r.displayName}</div>
-                          <div style={{ color: "#8e9297", fontSize: 12 }}>送信済み</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : tree ? (
-                <ChannelList
-                  tree={tree}
-                  selectedChannelId={selectedChannelId}
-                  onSelectChannel={(id) => {
-                    setMobileDrawer(null);
-                    selectChannelAndMarkRead(id);
-                  }}
-                  unreadByChannelId={unreadByChannelId}
-                  notifications={notifications}
-                  onClearNotifications={() => setNotifications([])}
-                  onDismissNotification={(id) => setNotifications((prev) => prev.filter((n) => n.id !== id))}
-                  onOpenNotification={(id) => {
-                    setMobileDrawer(null);
-                    openNotification(id);
-                  }}
-                  onRequestCreateCategory={
-                    treeLoading
-                      ? undefined
-                      : tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                        ? () => {
-                            setMobileDrawer(null);
-                            openCreateCategory();
-                          }
-                        : undefined
-                  }
-                  onOpenRoomSettings={
-                    tree.room.owner_id
-                      ? () => {
-                          setMobileDrawer(null);
-                          openInviteModal();
-                        }
-                      : undefined
-                  }
-                  onRequestCreateChannel={
-                    treeLoading
-                      ? undefined
-                      : tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                        ? (categoryId) => {
-                            setMobileDrawer(null);
-                            openCreateChannel(categoryId);
-                          }
-                        : undefined
-                  }
-                  onRequestDeleteCategory={
-                    tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                      ? (categoryId, categoryName) => {
-                          setMobileDrawer(null);
-                          openDeleteCategory(categoryId, categoryName);
-                        }
-                      : undefined
-                  }
-                  onRequestDeleteChannel={
-                    tree.room.owner_id && currentUserId && tree.room.owner_id === currentUserId
-                      ? (channelId, channelName) => {
-                          setMobileDrawer(null);
-                          openDeleteChannel(channelId, channelName);
-                        }
-                      : undefined
-                  }
-                  currentUserName={displayName || currentUserId || "user"}
-                  currentUserAvatarUrl={currentUserAvatarUrl}
-                  onOpenSettings={currentUserId ? () => { setMobileDrawer(null); openSettings(); } : undefined}
-                />
-              ) : (
-                <div style={{ padding: 12, color: "#8e9297", fontSize: 12 }}>読み込み中…</div>
-              )}
-            </Drawer>
-          )}
-
-          {authed && isNarrow && mobileDrawer === "members" && (
-            <Drawer title="メンバー" onClose={() => setMobileDrawer(null)} side="right" width={360}>
-              <MemberPane
-                members={memberPane}
-                loading={memberPaneLoading}
-                error={memberPaneError}
-                onMemberClick={(m) => {
-                  setMobileDrawer(null);
-                  openUserActions(m.userId, { displayName: m.displayName, hasAvatar: m.hasAvatar });
-                }}
-              />
-            </Drawer>
-          )}
-        </div>
+        <RoomView
+          authed={authed}
+          isNarrow={isNarrow}
+          HOME_ID={HOME_ID}
+          rooms={rooms}
+          roomsLoading={roomsLoading}
+          selectedRoomId={selectedRoomId}
+          setSelectedRoomId={setSelectedRoomId}
+          openCreateRoom={openCreateRoom}
+          openJoinModal={openJoinModal}
+          mobileDrawer={mobileDrawer}
+          setMobileDrawer={setMobileDrawer}
+          tree={tree}
+          treeLoading={treeLoading}
+          selectedChannelId={selectedChannelId}
+          selectedChannelName={selectedChannelName}
+          selectChannelAndMarkRead={selectChannelAndMarkRead}
+          unreadByChannelId={unreadByChannelId}
+          notifications={notifications}
+          setNotifications={setNotifications}
+          openNotification={openNotification}
+          openCreateCategory={openCreateCategory}
+          openInviteModal={openInviteModal}
+          openCreateChannel={openCreateChannel}
+          openDeleteCategory={openDeleteCategory}
+          openDeleteChannel={openDeleteChannel}
+          memberPane={memberPane}
+          memberPaneLoading={memberPaneLoading}
+          memberPaneError={memberPaneError}
+          currentUserId={currentUserId}
+          displayName={displayName}
+          currentUserAvatarUrl={currentUserAvatarUrl}
+          openSettings={openSettings}
+          avatarDataUrl={avatarDataUrl}
+          openAddFriend={openAddFriend}
+          openHomeAudit={openHomeAudit}
+          homeAuditBusy={homeAuditBusy}
+          homeError={homeError}
+          addFriendOpen={addFriendOpen}
+          homeLoading={homeLoading}
+          friends={friends}
+          openDmWith={openDmWith}
+          deleteFriend={deleteFriend}
+          requests={requests}
+          acceptRequest={acceptRequest}
+          rejectRequest={rejectRequest}
+          openUserActions={openUserActions}
+          enterKeySends={enterKeySends}
+          focusMessage={focusMessage}
+          setFocusMessage={setFocusMessage}
+          setFocusDmMessage={setFocusDmMessage}
+          setDmSearchOpen={setDmSearchOpen}
+          selectedDmPeerName={selectedDmPeerName}
+          selectedDmThreadId={selectedDmThreadId}
+          dmListRef={dmListRef}
+          dmLoading={dmLoading}
+          dmError={dmError}
+          dmMessages={dmMessages}
+          dmHighlightId={dmHighlightId}
+          dmReactionEmojis={dmReactionEmojis}
+          dmReactionPickerFor={dmReactionPickerFor}
+          setDmReactionPickerFor={setDmReactionPickerFor}
+          toggleDmReaction={toggleDmReaction}
+          pickDmReaction={pickDmReaction}
+          dmText={dmText}
+          setDmText={setDmText}
+          dmSending={dmSending}
+          sendDm={sendDm}
+          openDmSearch={openDmSearch}
+          dmSearchOpen={dmSearchOpen}
+          closeDmSearch={closeDmSearch}
+          dmSearchBusy={dmSearchBusy}
+          dmSearchQ={dmSearchQ}
+          setDmSearchQ={setDmSearchQ}
+          dmSearchError={dmSearchError}
+          dmSearchItems={dmSearchItems}
+          dmSearchHasMore={dmSearchHasMore}
+          runDmSearch={runDmSearch}
+          dmSearchInputRef={dmSearchInputRef}
+        />
       ) : (
-        <>
-          <header className="topbar authTopbar">
-            <div className="brand">
-              <div className="logo">YR</div>
-              <div>
-                <div className="title">YuiRoom</div>
-              </div>
-            </div>
-          </header>
-
-          <main className="card">
-            {/* 画面切り替え（カード上部） */}
-            <div className="cardTop">
-              <div className="seg">
-                <button
-                  className={`segBtn ${mode === "login" ? "active" : ""}`}
-                  onClick={() => setMode("login")}
-                  disabled={busy}
-                >
-                  ログイン
-                </button>
-                <button
-                  className={`segBtn ${mode === "register" ? "active" : ""}`}
-                  onClick={() => setMode("register")}
-                  disabled={busy}
-                >
-                  新規登録
-                </button>
-              </div>
-            </div>
-
-            {/* パネル（切り替えアニメ） */}
-            <div key={mode} className="panel">
-              {mode === "login" ? (
-                <>
-                  <h1>ログイン</h1>
-                  <p className="desc">ユーザーIDを入力して、パスキーで認証します。</p>
-
-                  <label className="label">
-                    ユーザーID（重複不可・変更可）
-                    <input
-                      className={`input ${loginErr ? "bad" : ""}`}
-                      value={login.userId}
-                      onChange={(e) => setLogin({ userId: e.target.value })}
-                      placeholder="例: user_id"
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      disabled={busy}
-                    />
-                    {loginErr ? (
-                      <div className="hint badText">{loginErr}</div>
-                    ) : (
-                      <div className="hint">a-z / 0-9 / _ / - のみ（3〜32文字）</div>
-                    )}
-                  </label>
-
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={rememberUserId}
-                      onChange={(e) => setRememberUserId(e.target.checked)}
-                      disabled={busy}
-                    />
-                    <span>この端末にユーザーIDを保存する</span>
-                  </label>
-
-                  <button className="primary" onClick={onLogin} disabled={busy || !!loginErr}>
-                    {busy ? "認証中…" : "パスキーでログイン"}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <h1>新規登録</h1>
-                  <p className="desc">ユーザーIDとユーザー名を設定して、パスキーを登録します。</p>
-
-                  <label className="label">
-                    ユーザーID（重複不可・変更可）
-                    <input
-                      className={`input ${regUserIdErr ? "bad" : ""}`}
-                      value={reg.userId}
-                      onChange={(e) => setReg((p) => ({ ...p, userId: e.target.value }))}
-                      placeholder="例: user_id"
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      disabled={busy}
-                    />
-                    {regUserIdErr ? (
-                      <div className="hint badText">{regUserIdErr}</div>
-                    ) : (
-                      <div className="hint">a-z / 0-9 / _ / - のみ（3〜32文字）</div>
-                    )}
-                  </label>
-
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={rememberUserId}
-                      onChange={(e) => setRememberUserId(e.target.checked)}
-                      disabled={busy}
-                    />
-                    <span>この端末にユーザーIDを保存する</span>
-                  </label>
-
-                  <label className="label">
-                    ユーザー名（表示名・日本語OK・重複OK）
-                    <input
-                      className={`input ${regNameErr ? "bad" : ""}`}
-                      value={reg.displayName}
-                      onChange={(e) => setReg((p) => ({ ...p, displayName: e.target.value }))}
-                      placeholder="例: user_name"
-                      disabled={busy}
-                    />
-                    {regNameErr ? (
-                      <div className="hint badText">{regNameErr}</div>
-                    ) : (
-                      <div className="hint">1〜32文字、改行なし</div>
-                    )}
-                  </label>
-
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={agreeNoRecovery}
-                      onChange={(e) => setAgreeNoRecovery(e.target.checked)}
-                      disabled={busy}
-                    />
-                    <span>パスキーを失うと復旧できないことを理解しました（同意）</span>
-                  </label>
-
-                  <button
-                    className="primary"
-                    onClick={onRegister}
-                    disabled={busy || !!regUserIdErr || !!regNameErr || !agreeNoRecovery}
-                  >
-                    {busy ? "登録中…" : "パスキーを登録してはじめる"}
-                  </button>
-                </>
-              )}
-            </div>
-
-            {toast && <div className="toast">{toast}</div>}
-          </main>
-
-        </>
+        <AuthScreen
+          mode={mode}
+          setMode={setMode}
+          busy={busy}
+          toast={toast}
+          login={login}
+          setLogin={setLogin}
+          loginErr={loginErr}
+          rememberUserId={rememberUserId}
+          setRememberUserId={setRememberUserId}
+          reg={reg}
+          setReg={setReg as any}
+          regUserIdErr={regUserIdErr}
+          regNameErr={regNameErr}
+          agreeNoRecovery={agreeNoRecovery}
+          setAgreeNoRecovery={setAgreeNoRecovery}
+          onLogin={onLogin}
+          onRegister={onRegister}
+        />
       )}
 
-      {/* ログアウトボタン（ログイン時のみ） */}
-      {authed && (
-        <button
-          onClick={logout}
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 10,
-            border: "1px solid #72767d",
-            background: "#36393f",
-            color: "#dcddde",
-            padding: "8px 12px",
-            borderRadius: 4,
-            cursor: "pointer"
-          }}
-        >
-          ログアウト
-        </button>
-      )}
-
-      {authed && createModal && (
-        <Modal
-          title={
-            createModal.kind === "room"
-              ? "Roomを作成"
-              : createModal.kind === "category"
-              ? "カテゴリを作成"
-              : "チャンネルを作成"
-          }
-          onClose={closeModal}
-          footer={
-            <>
-              <button
-                onClick={closeModal}
-                disabled={createBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                キャンセル
-              </button>
-              <button
-                onClick={submitCreate}
-                disabled={createBusy || !createName.trim()}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7289da",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 800,
-                  opacity: createBusy ? 0.7 : 1,
-                }}
-              >
-                作成
-              </button>
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
-              名前
-              <input
-                value={createName}
-                onChange={(e) => setCreateName(e.target.value)}
-                disabled={createBusy}
-                autoFocus
-                style={{
-                  width: "100%",
-                  padding: "12px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "#202225",
-                  color: "#dcddde",
-                  fontSize: 14,
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submitCreate();
-                  if (e.key === "Escape") closeModal();
-                }}
-                placeholder={
-                  createModal.kind === "room"
-                    ? "例: Room 2"
-                    : createModal.kind === "category"
-                    ? "例: 企画"
-                    : "例: general"
-                }
-              />
-            </label>
-            {createError && (
-              <div style={{ color: "#ff7a7a", fontSize: 12, lineHeight: 1.3 }}>{createError}</div>
-            )}
-            {createModal.kind === "room" && (
-              <button
-                type="button"
-                onClick={() => {
-                  closeModal();
-                  openJoinModal();
-                }}
-                disabled={createBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: createBusy ? "not-allowed" : "pointer",
-                  fontSize: 13,
-                  fontWeight: 800,
-                  opacity: createBusy ? 0.7 : 1,
-                }}
-              >
-                招待URLで参加
-              </button>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      <SettingsModal
-        open={authed && settingsOpen}
-        onClose={closeSettings}
-        onSave={saveSettings}
+      <AppOverlays
+        authed={authed}
+        logout={logout}
+        createModal={createModal}
+        closeModal={closeModal}
+        createBusy={createBusy}
+        createName={createName}
+        setCreateName={setCreateName}
+        submitCreate={submitCreate}
+        createError={createError}
+        openJoinModal={openJoinModal}
+        settingsOpen={settingsOpen}
+        closeSettings={closeSettings}
+        saveSettings={saveSettings}
         settingsName={settingsName}
         setSettingsName={setSettingsName}
         settingsAvatar={settingsAvatar}
@@ -3293,429 +1833,81 @@ export default function App() {
         currentUserId={currentUserId}
         fileToPngAvatarDataUrl={fileToPngAvatarDataUrl}
         enterKeySends={enterKeySends}
-        onChangeEnterKeySends={(v) => {
+        onChangeEnterKeySends={(v: boolean) => {
           setEnterKeySends(v);
           writeEnterKeySends(v);
         }}
-      />
-
-      {authed && addFriendOpen && (
-        <Modal
-          title="フレンドを追加する"
-          onClose={closeAddFriend}
-          footer={
-            <>
-              <button
-                onClick={closeAddFriend}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                キャンセル
-              </button>
-              <button
-                onClick={() => void sendFriendRequest()}
-                disabled={!friendInput.trim()}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7289da",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 800,
-                  opacity: friendInput.trim() ? 1 : 0.6,
-                }}
-              >
-                申請
-              </button>
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
-              ユーザーID
-              <input
-                value={friendInput}
-                onChange={(e) => setFriendInput(e.target.value)}
-                autoFocus
-                style={{
-                  width: "100%",
-                  padding: "12px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "#202225",
-                  color: "#dcddde",
-                  fontSize: 14,
-                  outline: "none",
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void sendFriendRequest();
-                  if (e.key === "Escape") closeAddFriend();
-                }}
-                placeholder="例: user_name"
-              />
-            </label>
-            <div style={{ color: "#8e9297", fontSize: 12, lineHeight: 1.4 }}>
-              相手に承認されるとフレンドになります。
-            </div>
-            {homeError && (
-              <div style={{ color: "#ff7a7a", fontSize: 12, lineHeight: 1.3 }}>{homeError}</div>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {authed && deleteModal && (
-        <Modal
-          title="削除の確認"
-          onClose={closeDeleteModal}
-          footer={
-            <>
-              <button
-                onClick={closeDeleteModal}
-                disabled={deleteBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                キャンセル
-              </button>
-              <button
-                onClick={submitDelete}
-                disabled={deleteBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7289da",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 800,
-                  opacity: deleteBusy ? 0.7 : 1,
-                }}
-              >
-                削除する
-              </button>
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 10, color: "#dcddde" }}>
-            <div style={{ fontSize: 14, lineHeight: 1.4 }}>
-              {deleteModal.kind === "room" && (
-                <>Room「{deleteModal.roomName}」を削除する？</>
-              )}
-              {deleteModal.kind === "category" && (
-                <>カテゴリ「{deleteModal.categoryName}」を削除する？（配下のチャンネルも消えるよ）</>
-              )}
-              {deleteModal.kind === "channel" && (
-                <>チャンネル「{deleteModal.channelName}」を削除する？</>
-              )}
-            </div>
-            {deleteError && (
-              <div style={{ color: "#ff7a7a", fontSize: 12, lineHeight: 1.3 }}>{deleteError}</div>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {authed && userAction && (
-        <Modal
-          title="ユーザー"
-          onClose={closeUserActions}
-          footer={
-            <>
-              <button
-                onClick={closeUserActions}
-                disabled={userActionBusy}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid #40444b",
-                  background: "transparent",
-                  color: "#dcddde",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                閉じる
-              </button>
-              {selectedRoomId &&
-                selectedRoomId !== HOME_ID &&
-                tree?.room.owner_id &&
-                currentUserId &&
-                tree.room.owner_id === currentUserId &&
-                userAction.userId !== currentUserId && (
-                  <button
-                    onClick={() => {
-                      closeUserActions();
-                      openBanModal(userAction.userId);
-                    }}
-                    disabled={userActionBusy}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: "none",
-                      background: "#ed4245",
-                      color: "#ffffff",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      fontWeight: 900,
-                      opacity: userActionBusy ? 0.7 : 1,
-                    }}
-                  >
-                    BAN…
-                  </button>
-                )}
-            </>
-          }
-        >
-          <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div
-                style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: "50%",
-                  background: "#7289da",
-                  display: "grid",
-                  placeItems: "center",
-                  overflow: "hidden",
-                  flexShrink: 0,
-                  color: "#ffffff",
-                  fontWeight: 900,
-                  fontSize: 16,
-                }}
-                title={userAction.displayName}
-              >
-                {userAction.hasAvatar ? (
-                  <img
-                    src={api.userAvatarUrl(userAction.userId)}
-                    alt="avatar"
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                  />
-                ) : (
-                  userAction.displayName?.[0]?.toUpperCase?.() ?? "?"
-                )}
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div
-                  style={{
-                    fontWeight: 900,
-                    color: "#ffffff",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {userAction.displayName}
-                </div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "#b9bbbe",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                  }}
-                >
-                  {userAction.userId}
-                </div>
-              </div>
-            </div>
-
-            {userActionError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{userActionError}</div>}
-
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-              {userActionStatus?.kind === "friend" && (
-                <button
-                  onClick={() => {
-                    setSelectedRoomId(HOME_ID);
-                    void openDmWith(userActionStatus.friend);
-                    closeUserActions();
-                  }}
-                  disabled={userActionBusy}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: "none",
-                    background: "#3ba55c",
-                    color: "#111",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontWeight: 900,
-                    opacity: userActionBusy ? 0.7 : 1,
-                  }}
-                >
-                  DMを開く
-                </button>
-              )}
-
-              {userActionStatus?.kind === "none" && (
-                <button
-                  onClick={() => void userActionSendFriendRequest()}
-                  disabled={userActionBusy}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: "none",
-                    background: "#7289da",
-                    color: "#ffffff",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontWeight: 900,
-                    opacity: userActionBusy ? 0.7 : 1,
-                  }}
-                >
-                  フレンド申請
-                </button>
-              )}
-
-              {userActionStatus?.kind === "outgoing" && (
-                <button
-                  disabled
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: "1px solid #40444b",
-                    background: "transparent",
-                    color: "#b9bbbe",
-                    cursor: "default",
-                    fontSize: 13,
-                    fontWeight: 900,
-                    opacity: 0.85,
-                  }}
-                >
-                  申請中
-                </button>
-              )}
-
-              {userActionStatus?.kind === "incoming" && (
-                <>
-                  <button
-                    onClick={() => void userActionAcceptFriendRequest(userActionStatus.requestId)}
-                    disabled={userActionBusy}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: "none",
-                      background: "#3ba55c",
-                      color: "#111",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      fontWeight: 900,
-                      opacity: userActionBusy ? 0.7 : 1,
-                    }}
-                  >
-                    承認
-                  </button>
-                  <button
-                    onClick={() => void userActionRejectFriendRequest(userActionStatus.requestId)}
-                    disabled={userActionBusy}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: "none",
-                      background: "#ed4245",
-                      color: "#ffffff",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      fontWeight: 900,
-                      opacity: userActionBusy ? 0.7 : 1,
-                    }}
-                  >
-                    拒否
-                  </button>
-                </>
-              )}
-
-              {userActionStatus?.kind === "self" && <div style={{ color: "#b9bbbe", fontSize: 12 }}>自分だよ</div>}
-              {!userActionStatus && <div style={{ color: "#b9bbbe", fontSize: 12 }}>読み込み中…</div>}
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      <BanModal
-        open={authed && !!banModal}
-        roomName={banModal?.roomName ?? ""}
-        userId={banUserId}
-        onChangeUserId={setBanUserId}
-        reason={banReason}
-        onChangeReason={setBanReason}
-        busy={banBusy}
-        error={banError}
-        onClose={closeBanModal}
-        onBan={() => void submitBan("ban")}
-        onUnban={() => void submitBan("unban")}
-      />
-
-      <RoomSettingsModal
-        open={authed && !!inviteModal}
+        addFriendOpen={addFriendOpen}
+        closeAddFriend={closeAddFriend}
+        sendFriendRequest={sendFriendRequest}
+        friendInput={friendInput}
+        setFriendInput={setFriendInput}
+        homeError={homeError}
+        deleteModal={deleteModal}
+        closeDeleteModal={closeDeleteModal}
+        deleteBusy={deleteBusy}
+        submitDelete={submitDelete}
+        deleteError={deleteError}
+        userAction={userAction}
+        closeUserActions={closeUserActions}
+        userActionBusy={userActionBusy}
+        selectedRoomId={selectedRoomId}
+        HOME_ID={HOME_ID}
+        tree={tree}
+        openBanModal={openBanModal}
+        userActionError={userActionError}
+        userActionStatus={userActionStatus}
+        setSelectedRoomId={setSelectedRoomId}
+        openDmWith={openDmWith}
+        userActionSendFriendRequest={userActionSendFriendRequest}
+        userActionAcceptFriendRequest={userActionAcceptFriendRequest}
+        userActionRejectFriendRequest={userActionRejectFriendRequest}
+        banModal={banModal}
+        banUserId={banUserId}
+        setBanUserId={setBanUserId}
+        banReason={banReason}
+        setBanReason={setBanReason}
+        banBusy={banBusy}
+        banError={banError}
+        closeBanModal={closeBanModal}
+        submitBan={submitBan}
         inviteModal={inviteModal}
-        onClose={closeInviteModal}
+        closeInviteModal={closeInviteModal}
         roomSettingsTab={roomSettingsTab}
         setRoomSettingsTab={setRoomSettingsTab}
         inviteBusy={inviteBusy}
         inviteError={inviteError}
         auditError={auditError}
-        currentUserId={currentUserId}
         members={members}
         invites={invites}
         auditLogs={auditLogs}
         inviteUrlFromCode={inviteUrlFromCode}
         setToast={setToast}
-        onLeaveRoom={(roomId) => void leaveRoom(roomId)}
-        onCreateInvite={() => void createInvite()}
-        onDeleteInvite={(code) => void deleteInvite(code)}
-        onRefreshAudit={() => void refreshAudit()}
-        onBanFromMemberList={banFromMemberList}
-        onKickMember={(userId) => void kickMember(userId)}
-        onDeleteRoom={deleteRoomFromSettings}
-      />
-
-      <ConfirmActionModal
-        open={authed && !!confirmModal}
-        action={confirmModal as any}
-        busy={inviteBusy}
-        onClose={closeConfirmModal}
-        onConfirm={(action) => {
-          if (action.kind === "leave") void confirmLeaveRoom(action.roomId);
-          if (action.kind === "kick") void confirmKickMember(action.roomId, action.userId);
-          setConfirmModal(null);
-        }}
-      />
-
-      <JoinRoomModal
-        open={authed && joinOpen}
+        leaveRoom={leaveRoom}
+        createInvite={createInvite}
+        deleteInvite={deleteInvite}
+        refreshAudit={refreshAudit}
+        banFromMemberList={banFromMemberList}
+        kickMember={kickMember}
+        deleteRoomFromSettings={deleteRoomFromSettings}
+        confirmModal={confirmModal}
+        closeConfirmModal={closeConfirmModal}
+        confirmLeaveRoom={confirmLeaveRoom}
+        confirmKickMember={confirmKickMember}
+        setConfirmModal={setConfirmModal}
+        joinOpen={joinOpen}
         joinCode={joinCode}
-        onChangeJoinCode={setJoinCode}
-        busy={joinBusy}
-        error={joinError}
-        canJoin={!!extractInviteCode(joinCode)}
-        onClose={closeJoinModal}
-        onJoin={() => void submitJoin()}
-      />
-
-      <HomeAuditModal
-        open={authed && homeAuditOpen}
-        busy={homeAuditBusy}
-        error={homeAuditError}
-        logs={homeAuditLogs}
-        onClose={closeHomeAudit}
-        onRefresh={() => void openHomeAudit()}
+        setJoinCode={setJoinCode}
+        joinBusy={joinBusy}
+        joinError={joinError}
+        closeJoinModal={closeJoinModal}
+        submitJoin={submitJoin}
+        homeAuditOpen={homeAuditOpen}
+        homeAuditBusy={homeAuditBusy}
+        homeAuditError={homeAuditError}
+        homeAuditLogs={homeAuditLogs}
+        closeHomeAudit={closeHomeAudit}
+        openHomeAudit={openHomeAudit}
       />
     </div>
   );

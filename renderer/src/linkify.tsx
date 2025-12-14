@@ -152,6 +152,8 @@ function renderInlineTokens(tokens: InlineToken[], query?: string, keyPrefix = "
             padding: "1px 6px",
             fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             fontSize: "0.92em",
+            overflowWrap: "anywhere",
+            wordBreak: "break-all",
           }}
         >
           {tok.text}
@@ -199,6 +201,8 @@ function renderRichChunk(text: string, query?: string, keyPrefix = "k"): ReactNo
             padding: "1px 6px",
             fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             fontSize: "0.92em",
+            overflowWrap: "anywhere",
+            wordBreak: "break-all",
           }}
         >
           {part.text}

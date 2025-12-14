@@ -344,7 +344,7 @@ export function RoomView(props: any) {
           }}
         />
       ) : (
-        <div style={{ display: "flex", flex: 1, height: "var(--app-height)" }}>
+        <div style={{ display: "flex", flex: 1, minWidth: 0, height: "var(--app-height)", overflowX: "hidden" }}>
           <MessageArea
             roomId={tree?.room?.id ?? null}
             selectedChannelId={selectedChannelId}

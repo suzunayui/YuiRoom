@@ -1037,6 +1037,7 @@ export function MessageArea({
                 gap: 12,
                 padding: "6px 8px",
                 borderRadius: 12,
+                minWidth: 0,
                 background: highlightMessageId === msg.id ? "rgba(114,137,218,0.20)" : "transparent",
                 transition: "background 180ms ease",
               }}

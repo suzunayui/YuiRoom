@@ -122,7 +122,7 @@ export function DmPanel({
         </div>
       )}
 
-      <div ref={dmListRef} className="darkScroll" style={{ flex: 1, padding: "16px", overflowY: "auto" }}>
+      <div ref={dmListRef} className="darkScroll" style={{ flex: 1, minWidth: 0, padding: "16px", overflowY: "auto", overflowX: "hidden" }}>
         {dmLoading && <div style={{ opacity: 0.8, fontSize: 13 }}>読み込み中…</div>}
         {dmError && <div style={{ color: "#ff7a7a", fontSize: 12, marginBottom: 10 }}>{dmError}</div>}
         {!dmLoading && !dmError && selectedDmThreadId && dmMessages.length === 0 && (
@@ -140,6 +140,7 @@ export function DmPanel({
               gap: 12,
               padding: "6px 8px",
               borderRadius: 12,
+              minWidth: 0,
               background: dmHighlightId === msg.id ? "rgba(114,137,218,0.20)" : "transparent",
               transition: "background 180ms ease",
             }}

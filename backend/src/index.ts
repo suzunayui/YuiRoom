@@ -2138,6 +2138,43 @@ app.post("/users/:userId/displayName", requireAuth, async (req, res) => {
   return res.json({ ok: true });
 });
 
+// user profile (self only)
+app.get("/users/:userId/profile", requireAuth, async (req, res) => {
+  const userIdParam = req.params.userId;
+  const userIdErr = validateUserId(userIdParam);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const userId = normalizeUserId(String(userIdParam));
+
+  const me = (req as any).userId as string;
+  if (me !== userId) return res.status(403).json({ error: "forbidden" });
+
+  const u = await pool.query(`SELECT id, display_name, bio FROM users WHERE id=$1`, [userId]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+  return res.json({ userId: u.rows[0].id, displayName: u.rows[0].display_name, bio: u.rows[0].bio ?? null });
+});
+
+// update user bio (self only)
+app.post("/users/:userId/bio", requireAuth, async (req, res) => {
+  const userIdParam = req.params.userId;
+  const userIdErr = validateUserId(userIdParam);
+  if (userIdErr) return res.status(400).json({ error: userIdErr });
+  const userId = normalizeUserId(String(userIdParam));
+
+  const me = (req as any).userId as string;
+  if (me !== userId) return res.status(403).json({ error: "forbidden" });
+
+  const bioRaw = req.body?.bio;
+  const bio = typeof bioRaw === "string" ? bioRaw.trim() : "";
+  if (bio.length > 80) return res.status(400).json({ error: "bio_too_long" });
+  if (/[\r\n]/.test(bio)) return res.status(400).json({ error: "bio_no_newlines" });
+
+  const u = await pool.query(`SELECT id FROM users WHERE id=$1`, [userId]);
+  if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+
+  await pool.query(`UPDATE users SET bio=$2 WHERE id=$1`, [userId, bio ? bio : null]);
+  return res.json({ ok: true });
+});
+
 // list rooms
 app.get("/rooms", requireAuth, async (req, res) => {
   const me = (req as any).userId as string;
@@ -2530,14 +2567,14 @@ app.get("/rooms/:roomId/members", requireAuth, async (req, res) => {
   if (!(await assertRoomMember(roomId, me, res))) return;
 
   const { rows } = await pool.query(
-    `SELECT user_id, display_name, has_avatar
+    `SELECT user_id, display_name, has_avatar, bio
      FROM (
-       SELECT rm.user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar
+       SELECT rm.user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar, u.bio
        FROM room_members rm
        JOIN users u ON u.id = rm.user_id
        WHERE rm.room_id=$1
        UNION
-       SELECT r.owner_id AS user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar
+       SELECT r.owner_id AS user_id, u.display_name, (u.avatar_data IS NOT NULL) AS has_avatar, u.bio
        FROM rooms r
        JOIN users u ON u.id = r.owner_id
        WHERE r.id=$1 AND r.owner_id IS NOT NULL
@@ -2550,6 +2587,7 @@ app.get("/rooms/:roomId/members", requireAuth, async (req, res) => {
       userId: r.user_id,
       displayName: r.display_name,
       hasAvatar: !!r.has_avatar,
+      bio: r.bio ?? null,
       isOwner: ownerId === String(r.user_id),
       online: isUserOnline(String(r.user_id)),
     }))

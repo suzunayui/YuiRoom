@@ -29,6 +29,8 @@ export function AppOverlays(props: any) {
     setSettingsName,
     settingsAvatar,
     setSettingsAvatar,
+    settingsBio,
+    setSettingsBio,
     settingsError,
     displayName,
     currentUserId,
@@ -244,6 +246,8 @@ export function AppOverlays(props: any) {
         setSettingsName={setSettingsName}
         settingsAvatar={settingsAvatar}
         setSettingsAvatar={setSettingsAvatar}
+        settingsBio={settingsBio}
+        setSettingsBio={setSettingsBio}
         settingsError={settingsError}
         displayName={displayName}
         currentUserId={currentUserId}
@@ -657,4 +661,3 @@ export function AppOverlays(props: any) {
     </>
   );
 }
-

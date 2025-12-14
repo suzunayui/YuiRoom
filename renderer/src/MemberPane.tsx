@@ -111,6 +111,24 @@ export function MemberPane({ members, loading, error, width, onMemberClick }: Pr
                         {m.displayName}
                         {m.isOwner && <span style={{ marginLeft: 6, fontSize: 11, color: "#b9bbbe" }}>(owner)</span>}
                       </div>
+                      {!!m.bio && (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "#b9bbbe",
+                            lineHeight: 1.2,
+                            marginTop: 2,
+                            overflow: "hidden",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            wordBreak: "break-word",
+                          }}
+                          title={m.bio || ""}
+                        >
+                          {m.bio}
+                        </div>
+                      )}
                       <div style={{ fontSize: 11, color: "#8e9297", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
                         {m.userId}
                       </div>
@@ -175,6 +193,24 @@ export function MemberPane({ members, loading, error, width, onMemberClick }: Pr
                         {m.displayName}
                         {m.isOwner && <span style={{ marginLeft: 6, fontSize: 11, color: "#b9bbbe" }}>(owner)</span>}
                       </div>
+                      {!!m.bio && (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "#b9bbbe",
+                            lineHeight: 1.2,
+                            marginTop: 2,
+                            overflow: "hidden",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            wordBreak: "break-word",
+                          }}
+                          title={m.bio || ""}
+                        >
+                          {m.bio}
+                        </div>
+                      )}
                       <div style={{ fontSize: 11, color: "#8e9297", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
                         {m.userId}
                       </div>

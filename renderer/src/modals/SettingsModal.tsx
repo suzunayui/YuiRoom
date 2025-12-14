@@ -21,6 +21,9 @@ type Props = {
   settingsAvatar: string;
   setSettingsAvatar: (v: string) => void;
 
+  settingsBio: string;
+  setSettingsBio: (v: string) => void;
+
   settingsError: string | null;
 
   displayName: string;
@@ -40,6 +43,8 @@ export function SettingsModal({
   setSettingsName,
   settingsAvatar,
   setSettingsAvatar,
+  settingsBio,
+  setSettingsBio,
   settingsError,
   displayName,
   currentUserId,
@@ -186,6 +191,24 @@ export function SettingsModal({
               </div>
             </div>
           </div>
+
+          <label style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
+            ひとこと（80文字まで）
+            <input
+              value={settingsBio}
+              onChange={(e) => setSettingsBio(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "12px 12px",
+                borderRadius: 8,
+                border: "1px solid #40444b",
+                background: "#202225",
+                color: "#dcddde",
+                fontSize: 14,
+              }}
+              placeholder="例: ねむい"
+            />
+          </label>
 
           <div style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
             送信キー

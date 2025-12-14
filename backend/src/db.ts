@@ -45,6 +45,9 @@ export async function initDb() {
     ALTER TABLE users
       ADD COLUMN IF NOT EXISTS avatar_data BYTEA;
 
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS bio TEXT;
+
     CREATE TABLE IF NOT EXISTS passkey_credentials (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

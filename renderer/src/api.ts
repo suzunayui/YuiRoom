@@ -52,8 +52,15 @@ export type RoomMember = {
   userId: string;
   displayName: string;
   hasAvatar: boolean;
+  bio?: string | null;
   isOwner: boolean;
   online?: boolean;
+};
+
+export type UserProfile = {
+  userId: string;
+  displayName: string;
+  bio: string | null;
 };
 
 export type AuditLog = {
@@ -111,6 +118,37 @@ function apiBase() {
 let authToken: string | null = null;
 let onAuthError: ((reason: string) => void) | null = null;
 
+const AUTH_TOKEN_SESSION_KEY = "yuiroom.authToken";
+
+function canUseSessionStorage(): boolean {
+  return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined";
+}
+
+function persistAuthToken(token: string | null) {
+  if (!canUseSessionStorage()) return;
+  try {
+    if (token) window.sessionStorage.setItem(AUTH_TOKEN_SESSION_KEY, token);
+    else window.sessionStorage.removeItem(AUTH_TOKEN_SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function setAuthTokenInternal(token: string | null) {
+  authToken = token && token.trim() ? token.trim() : null;
+  persistAuthToken(authToken);
+}
+
+// Restore token after reload (tab session only)
+if (canUseSessionStorage()) {
+  try {
+    const stored = window.sessionStorage.getItem(AUTH_TOKEN_SESSION_KEY);
+    if (stored && stored.trim()) authToken = stored.trim();
+  } catch {
+    // ignore
+  }
+}
+
 function authHeaders(): Record<string, string> {
   return authToken ? { authorization: `Bearer ${authToken}` } : {};
 }
@@ -118,7 +156,7 @@ function authHeaders(): Record<string, string> {
 async function handleAuthFailure(res: Response) {
   if (res.status !== 401) return;
   // トークン失効/未設定/不正など。以後のリクエストを止めるために破棄。
-  authToken = null;
+  setAuthTokenInternal(null);
   const msg = (await extractError(res)) ?? "auth_invalid";
   try {
     onAuthError?.(msg);
@@ -254,7 +292,7 @@ export const api = {
   base: apiBase,
   getAuthToken: () => authToken,
   setAuthToken: (token: string | null) => {
-    authToken = token && token.trim() ? token.trim() : null;
+    setAuthTokenInternal(token);
   },
   setOnAuthError: (fn: ((reason: string) => void) | null) => {
     onAuthError = fn;
@@ -351,6 +389,9 @@ export const api = {
     }),
   setUserDisplayName: (userId: string, displayName: string) =>
     postJson<{ ok: boolean }>(`/users/${encodeURIComponent(userId)}/displayName`, { displayName }),
+  getUserProfile: (userId: string) => getJson<UserProfile>(`/users/${encodeURIComponent(userId)}/profile`),
+  setUserBio: (userId: string, bio: string) =>
+    postJson<{ ok: boolean }>(`/users/${encodeURIComponent(userId)}/bio`, { bio }),
   listMessages: (channelId: string, limit?: number) => {
     const q = new URLSearchParams();
     q.set("limit", String(limit ?? 50));

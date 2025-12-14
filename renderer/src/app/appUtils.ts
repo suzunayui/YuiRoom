@@ -5,6 +5,7 @@ const USER_ID_REGEX = /^[a-z0-9_-]{3,32}$/;
 export const HOME_ID = "__home__";
 
 const SAVED_USER_ID_KEY = "yuiroom.savedUserId";
+const SESSION_USER_ID_KEY = "yuiroom.sessionUserId";
 const ENTER_KEY_SENDS_KEY = "yr_enter_key_sends_v1";
 
 export function normalizeUserId(v: string) {
@@ -96,6 +97,24 @@ export function writeSavedUserId(userId: string | null) {
   }
 }
 
+export function readSessionUserId(): string {
+  try {
+    return sessionStorage.getItem(SESSION_USER_ID_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeSessionUserId(userId: string | null) {
+  try {
+    const v = userId ? normalizeUserId(userId) : "";
+    if (v) sessionStorage.setItem(SESSION_USER_ID_KEY, v);
+    else sessionStorage.removeItem(SESSION_USER_ID_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export function readEnterKeySends(): boolean {
   try {
     const v = localStorage.getItem(ENTER_KEY_SENDS_KEY);
@@ -173,4 +192,3 @@ export async function fileToPngAvatarDataUrl(file: File, maxSizePx = 256): Promi
   }
   throw new Error("avatar_too_large");
 }
-

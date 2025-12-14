@@ -24,12 +24,14 @@ import {
   hasServerAvatar,
   inviteUrlFromCode,
   normalizeUserId,
+  readSessionUserId,
   readEnterKeySends,
   readSavedUserId,
   validateDisplayName,
   validateUserId,
   writeEnterKeySends,
   writeSavedUserId,
+  writeSessionUserId,
 } from "./app/appUtils";
 
 type Mode = "login" | "register";
@@ -112,6 +114,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsName, setSettingsName] = useState("");
   const [settingsAvatar, setSettingsAvatar] = useState<string>("");
+  const [settingsBio, setSettingsBio] = useState("");
   const [settingsError, setSettingsError] = useState<string | null>(null);
 
   // Rooms画面
@@ -1041,6 +1044,7 @@ export default function App() {
 
       if (rememberUserId) writeSavedUserId(ok.userId);
       else writeSavedUserId(null);
+      writeSessionUserId(ok.userId);
 
       api.setAuthToken(ok.token);
 
@@ -1098,6 +1102,7 @@ export default function App() {
 
       if (rememberUserId) writeSavedUserId(ok.userId);
       else writeSavedUserId(null);
+      writeSessionUserId(ok.userId);
 
       api.setAuthToken(ok.token);
 
@@ -1135,6 +1140,7 @@ export default function App() {
     setCurrentUserHasServerAvatar(false);
     setCurrentUserAvatarVersion(0);
     api.setAuthToken(null);
+    writeSessionUserId(null);
     realtime.close();
     setSelectedRoomId(null);
     setTree(null);
@@ -1154,6 +1160,45 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Reload復帰（トークンはsessionStorageに保存される）
+    if (authed) return;
+    const token = api.getAuthToken();
+    if (!token) return;
+
+    const userId = readSessionUserId() || readSavedUserId();
+    if (!userId) {
+      api.setAuthToken(null);
+      return;
+    }
+
+    setCurrentUserId(userId);
+
+    let name = userId;
+    try {
+      const stored = localStorage.getItem(displayNameKey(userId));
+      if (stored?.trim()) name = stored.trim();
+    } catch {
+      // ignore
+    }
+    setDisplayName(name);
+
+    try {
+      const storedAvatar = localStorage.getItem(avatarKey(userId));
+      setAvatarDataUrl(storedAvatar || "");
+    } catch {
+      setAvatarDataUrl("");
+    }
+    setCurrentUserAvatarVersion(0);
+    void (async () => {
+      const has = await hasServerAvatar(userId);
+      setCurrentUserHasServerAvatar(has);
+    })();
+
+    setAuthed(true);
+    void loadRooms();
+  }, []);
+
+  useEffect(() => {
     if (!rememberUserId) writeSavedUserId(null);
   }, [rememberUserId]);
 
@@ -1161,7 +1206,30 @@ export default function App() {
     setSettingsOpen(true);
     setSettingsName(displayName || currentUserId || "");
     setSettingsAvatar(avatarDataUrl || "");
+    try {
+      const storedBio = currentUserId ? localStorage.getItem(`yuiroom.bio:${currentUserId}`) : "";
+      setSettingsBio(storedBio || "");
+    } catch {
+      setSettingsBio("");
+    }
     setSettingsError(null);
+
+    if (currentUserId) {
+      void (async () => {
+        try {
+          const p = await api.getUserProfile(currentUserId);
+          const b = (p.bio ?? "").trim();
+          try {
+            localStorage.setItem(`yuiroom.bio:${currentUserId}`, b);
+          } catch {
+            // ignore
+          }
+          setSettingsBio(b);
+        } catch {
+          // ignore
+        }
+      })();
+    }
   }
 
   function closeSettings() {
@@ -1197,6 +1265,21 @@ export default function App() {
     try {
       await api.setUserDisplayName(currentUserId, name);
       await api.setUserAvatar(currentUserId, nextAvatar ? nextAvatar : null);
+      const bio = String(settingsBio || "").trim();
+      if (bio.length > 80) {
+        setSettingsError("ひとことは80文字までにしてね");
+        return;
+      }
+      if (/[\r\n]/.test(bio)) {
+        setSettingsError("ひとことは改行なしでお願いします");
+        return;
+      }
+      await api.setUserBio(currentUserId, bio);
+      try {
+        localStorage.setItem(`yuiroom.bio:${currentUserId}`, bio);
+      } catch {
+        // ignore
+      }
     } catch (e: any) {
       const msg = e?.message ?? "failed";
       if (msg === "avatar_invalid_dataUrl") {
@@ -1819,6 +1902,8 @@ export default function App() {
         setSettingsName={setSettingsName}
         settingsAvatar={settingsAvatar}
         setSettingsAvatar={setSettingsAvatar}
+        settingsBio={settingsBio}
+        setSettingsBio={setSettingsBio}
         settingsError={settingsError}
         displayName={displayName}
         currentUserId={currentUserId}

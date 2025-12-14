@@ -21,6 +21,29 @@ type Props = {
   onJumpToMessage?: (args: { channelId: string; messageId: string }) => void;
 };
 
+function scrollFromBottomKey(userId: string, channelId: string) {
+  return `yuiroom.scrollFromBottom:${userId}:${channelId}`;
+}
+
+function readScrollFromBottom(userId: string, channelId: string): number | null {
+  try {
+    const raw = localStorage.getItem(scrollFromBottomKey(userId, channelId));
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeScrollFromBottom(userId: string, channelId: string, value: number) {
+  try {
+    localStorage.setItem(scrollFromBottomKey(userId, channelId), String(Math.max(0, Math.round(value))));
+  } catch {
+    // ignore
+  }
+}
+
 function humanizeError(err: string): string {
   if (!err) return err;
   if (err === "attachment_too_large") return "添付ファイルが大きすぎます（10MBまで）";
@@ -332,6 +355,17 @@ export function MessageArea({
   }, [messages]);
 
   useEffect(() => {
+    const channelId = selectedChannelId;
+    const userId = currentUserId;
+    return () => {
+      if (!channelId || !userId) return;
+      const el = listRef.current;
+      if (!el) return;
+      writeScrollFromBottom(userId, channelId, el.scrollHeight - el.scrollTop);
+    };
+  }, [selectedChannelId, currentUserId]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function load() {
@@ -535,13 +569,26 @@ export function MessageArea({
     if (!el) return;
     if (lastChannelIdRef.current !== selectedChannelId) {
       lastChannelIdRef.current = selectedChannelId;
-      el.scrollTop = el.scrollHeight;
+      const userId = currentUserId;
+      const channelId = selectedChannelId;
+      const fromBottom = userId && channelId ? readScrollFromBottom(userId, channelId) : null;
+      if (fromBottom != null) {
+        requestAnimationFrame(() => {
+          const el2 = listRef.current;
+          if (!el2) return;
+          const nextTop = Math.max(0, el2.scrollHeight - fromBottom);
+          el2.scrollTop = nextTop;
+          shouldStickToBottomRef.current = el2.scrollHeight - el2.scrollTop - el2.clientHeight < 40;
+        });
+      } else {
+        el.scrollTop = el.scrollHeight;
+      }
       return;
     }
     if (!shouldStickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
     shouldStickToBottomRef.current = false;
-  }, [messages.length, selectedChannelId]);
+  }, [messages.length, selectedChannelId, currentUserId]);
 
   const mentionList = (() => {
     if (!mentionOpen) return [];

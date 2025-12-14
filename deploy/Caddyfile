@@ -11,18 +11,23 @@ yuiroom.net {
     Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self' ws: wss:; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
   }
 
-  # Backend API (strip /api)
-  handle_path /api/* {
-    reverse_proxy backend:3000
-  }
+  # Ensure routing order (WebSocket/API must bypass SPA fallback).
+  route {
+    # Backend API (strip /api)
+    handle_path /api/* {
+      reverse_proxy backend:3000
+    }
 
-  # WebSocket
-  reverse_proxy /ws backend:3000
+    # WebSocket
+    handle /ws* {
+      reverse_proxy backend:3000
+    }
 
-  # Frontend (Vite build output) + SPA fallback
-  handle {
-    root * /var/www/yuiroom/renderer/dist
-    try_files {path} /index.html
-    file_server
+    # Frontend (Vite build output) + SPA fallback
+    handle {
+      root * /var/www/yuiroom/renderer/dist
+      try_files {path} /index.html
+      file_server
+    }
   }
 }

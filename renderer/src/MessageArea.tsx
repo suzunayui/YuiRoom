@@ -124,7 +124,7 @@ function AttachmentImage({
   );
 }
 
-function AttachmentVideo({ attachmentId }: { attachmentId: string }) {
+function AttachmentVideo({ attachmentId, mimeType }: { attachmentId: string; mimeType: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -139,7 +139,8 @@ function AttachmentVideo({ attachmentId }: { attachmentId: string }) {
       try {
         const blob = await api.fetchAttachmentBlob(attachmentId);
         if (!active) return;
-        objectUrl = URL.createObjectURL(blob);
+        const normalized = blob.type ? blob : new Blob([blob], { type: mimeType });
+        objectUrl = URL.createObjectURL(normalized);
         setUrl(objectUrl);
       } catch {
         if (!active) return;
@@ -191,7 +192,9 @@ function AttachmentVideo({ attachmentId }: { attachmentId: string }) {
     <video
       src={url}
       controls
+      playsInline
       preload="metadata"
+      onError={() => setFailed(true)}
       style={{
         maxWidth: 420,
         width: "100%",
@@ -664,9 +667,15 @@ export function MessageArea({
       .find((f): f is File => !!f);
 
     if (!file) return;
-    if (!file.type.startsWith("image/")) return;
+    const isImage = file.type.startsWith("image/");
+    const isMp4 = file.type === "video/mp4";
+    if (!isImage && !isMp4) return;
 
     e.preventDefault();
+    if (file.size > 10 * 1024 * 1024) {
+      setError("ファイルが大きすぎます（10MBまで）");
+      return;
+    }
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const r = new FileReader();
@@ -1067,7 +1076,7 @@ export function MessageArea({
                   <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
                     {msg.attachments.map((a) => (
                       a.mime_type === "video/mp4" ? (
-                        <AttachmentVideo key={a.id} attachmentId={a.id} />
+                        <AttachmentVideo key={a.id} attachmentId={a.id} mimeType={a.mime_type} />
                       ) : (
                         <AttachmentImage key={a.id} attachmentId={a.id} onOpen={(src) => setImageModalSrc(src)} />
                       )

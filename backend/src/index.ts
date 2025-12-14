@@ -188,12 +188,28 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     try {
-      const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+      let origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+      // Some WebSocket clients (e.g. file:// contexts) send Origin: null.
+      // We still require a valid auth token, so allow these origins.
+      if (origin === "null" || origin.startsWith("file://")) origin = "";
+
       const wsOriginAllowlist = ((process.env.WS_ORIGIN ?? "").trim() || corsOriginRaw || "http://localhost:5173")
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      if (origin && !wsOriginAllowlist.includes(origin)) {
+
+      function normalizeOrigin(s: string): string {
+        try {
+          return new URL(s).origin;
+        } catch {
+          return s.trim();
+        }
+      }
+
+      const allowedOrigins = new Set(wsOriginAllowlist.map(normalizeOrigin));
+      const normalizedOrigin = origin ? normalizeOrigin(origin) : "";
+
+      if (normalizedOrigin && !allowedOrigins.has(normalizedOrigin)) {
         ws.close(1008, "origin_forbidden");
         return;
       }

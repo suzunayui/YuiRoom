@@ -7,6 +7,7 @@ type Props = {
   open: boolean;
   title?: string;
   selected?: Set<string>;
+  roomId?: string | null;
   onClose: () => void;
   onPickEmoji: (emoji: string) => void | Promise<void>;
   onPickSticker: (stickerId: string) => void | Promise<void>;
@@ -57,6 +58,7 @@ export function ReactionPickerModal({
   open,
   title = "リアクション",
   selected,
+  roomId,
   onClose,
   onPickEmoji,
   onPickSticker,
@@ -297,6 +299,7 @@ export function ReactionPickerModal({
           </div>
         ) : (
           <StickerPickerPanel
+            roomId={roomId}
             selected={selected}
             onPick={(stickerId) => onPickSticker(stickerId)}
           />

@@ -1096,6 +1096,7 @@ app.get(
       `SELECT id, name, mime_type, created_at
        FROM stickers
        WHERE owner_id=$1
+         AND room_id IS NULL
        ORDER BY created_at DESC
        LIMIT 200`,
       [me]
@@ -1137,6 +1138,107 @@ app.post(
   }
 );
 
+// room stickers (shared within a room)
+app.get(
+  "/rooms/:roomId/stickers",
+  requireAuth,
+  rateLimit({ name: "room_stickers_list", windowMs: 10_000, max: 30, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const roomId = String(req.params.roomId || "");
+    if (!roomId) return res.status(400).json({ error: "roomId_required" });
+    if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+    if (!(await assertRoomMember(roomId, me, res))) return;
+
+    const r = await pool.query(
+      `SELECT id, owner_id, name, mime_type, created_at
+       FROM stickers
+       WHERE room_id=$1
+       ORDER BY created_at DESC
+       LIMIT 500`,
+      [roomId]
+    );
+    res.json(
+      r.rows.map((row) => ({
+        id: String(row.id),
+        name: String(row.name ?? ""),
+        mimeType: String(row.mime_type ?? ""),
+        createdAt: new Date(row.created_at).toISOString(),
+        createdBy: String(row.owner_id || ""),
+      }))
+    );
+  }
+);
+
+app.post(
+  "/rooms/:roomId/stickers",
+  requireAuth,
+  rateLimit({ name: "room_stickers_create", windowMs: 60_000, max: 40, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const roomId = String(req.params.roomId || "");
+    if (!roomId) return res.status(400).json({ error: "roomId_required" });
+    if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+    if (!(await assertRoomMember(roomId, me, res))) return;
+
+    const dataUrl = req.body?.dataUrl;
+    if (typeof dataUrl !== "string") return res.status(400).json({ error: "sticker_dataUrl_required" });
+    const parsed = parseDataUrlImage(String(dataUrl));
+    if (!parsed) return res.status(400).json({ error: "sticker_invalid_dataUrl" });
+    // Keep stickers reasonably small, but allow animated GIFs too.
+    if (parsed.bytes.length > 2_000_000) return res.status(400).json({ error: "sticker_too_large" });
+
+    const nameRaw = typeof req.body?.name === "string" ? String(req.body.name) : "";
+    const name = nameRaw.trim().slice(0, 32);
+
+    const id = randomUUID();
+    await pool.query(
+      `INSERT INTO stickers (id, owner_id, room_id, name, mime_type, data)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, me, roomId, name, parsed.mime, parsed.bytes]
+    );
+    res.status(201).json({ id, name, mimeType: parsed.mime, createdBy: me });
+  }
+);
+
+app.delete(
+  "/rooms/:roomId/stickers/:stickerId",
+  requireAuth,
+  rateLimit({ name: "room_stickers_delete", windowMs: 60_000, max: 80, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const roomId = String(req.params.roomId || "");
+    const stickerId = String(req.params.stickerId || "");
+    if (!roomId) return res.status(400).json({ error: "roomId_required" });
+    if (!stickerId) return res.status(400).json({ error: "stickerId_required" });
+
+    if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+    if (!(await assertRoomMember(roomId, me, res))) return;
+
+    const s = await pool.query(
+      `SELECT s.id, s.owner_id, r.owner_id AS room_owner
+       FROM stickers s
+       JOIN rooms r ON r.id = s.room_id
+       WHERE s.id=$1 AND s.room_id=$2`,
+      [stickerId, roomId]
+    );
+    if ((s.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
+    const ownerId = String(s.rows?.[0]?.owner_id || "");
+    const roomOwner = s.rows?.[0]?.room_owner ? String(s.rows[0].room_owner) : null;
+    const canDelete = me === ownerId || (roomOwner && me === roomOwner);
+    if (!canDelete) return res.status(403).json({ error: "forbidden" });
+
+    const del = await pool.query(`DELETE FROM stickers WHERE id=$1 AND room_id=$2`, [stickerId, roomId]);
+    if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
+
+    const emoji = `sticker:${stickerId}`;
+    await pool.query(`DELETE FROM message_reactions WHERE emoji=$1`, [emoji]);
+    await pool.query(`DELETE FROM dm_message_reactions WHERE emoji=$1`, [emoji]);
+
+    res.json({ ok: true });
+  }
+);
+
 app.delete(
   "/stickers/:stickerId",
   requireAuth,
@@ -1146,7 +1248,7 @@ app.delete(
     const stickerId = String(req.params.stickerId || "");
     if (!stickerId) return res.status(400).json({ error: "stickerId_required" });
 
-    const del = await pool.query(`DELETE FROM stickers WHERE id=$1 AND owner_id=$2`, [stickerId, me]);
+    const del = await pool.query(`DELETE FROM stickers WHERE id=$1 AND owner_id=$2 AND room_id IS NULL`, [stickerId, me]);
     if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
 
     const emoji = `sticker:${stickerId}`;
@@ -1162,11 +1264,21 @@ app.get(
   requireAuth,
   rateLimit({ name: "stickers_get", windowMs: 60_000, max: 300, key: rateKeyByUserOrIp }),
   async (req, res) => {
+    const me = (req as any).userId as string;
     const stickerId = String(req.params.stickerId || "");
     if (!stickerId) return res.status(400).json({ error: "stickerId_required" });
 
-    const r = await pool.query(`SELECT mime_type, data FROM stickers WHERE id=$1`, [stickerId]);
+    const r = await pool.query(`SELECT mime_type, data, owner_id, room_id FROM stickers WHERE id=$1`, [stickerId]);
     if ((r.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
+
+    const ownerId = String(r.rows?.[0]?.owner_id || "");
+    const roomId = r.rows?.[0]?.room_id ? String(r.rows[0].room_id) : null;
+    if (roomId) {
+      if (!(await assertNotBannedFromRoom(roomId, me, res))) return;
+      if (!(await assertRoomMember(roomId, me, res))) return;
+    } else {
+      if (!ownerId || ownerId !== me) return res.status(403).json({ error: "forbidden" });
+    }
 
     const mime = String(r.rows?.[0]?.mime_type || "application/octet-stream");
     const data = r.rows?.[0]?.data as Buffer;

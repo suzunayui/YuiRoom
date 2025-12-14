@@ -1426,6 +1426,7 @@ export function MessageArea({
       <ReactionPickerModal
         open={!!reactionPickerFor}
         title="リアクション"
+        roomId={roomId}
         selected={
           reactionPickerFor
             ? new Set(

@@ -491,14 +491,17 @@ async function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 export function StickerPickerPanel({
+  roomId,
   selected,
   onPick,
 }: {
+  roomId?: string | null;
   selected?: Set<string>;
   onPick: (stickerId: string) => void | Promise<void>;
 }) {
-  const storageKey = "yuiroom.recentStickers";
-  const favKey = "yuiroom.favoriteStickers";
+  const scopeKey = roomId ? `room:${roomId}` : "me";
+  const storageKey = `yuiroom.recentStickers:${scopeKey}`;
+  const favKey = `yuiroom.favoriteStickers:${scopeKey}`;
   const qKey = "yuiroom.stickerPicker.query";
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -524,7 +527,7 @@ export function StickerPickerPanel({
     void (async () => {
       setBusy(true);
       try {
-        const r = await api.listStickers();
+        const r = roomId ? await api.listRoomStickers(roomId) : await api.listStickers();
         setItems(r);
       } catch (e: any) {
         setError(e?.message ?? "failed");
@@ -532,7 +535,7 @@ export function StickerPickerPanel({
         setBusy(false);
       }
     })();
-  }, []);
+  }, [roomId, storageKey, favKey]);
 
   useEffect(() => {
     safeWriteString(qKey, q);
@@ -607,8 +610,16 @@ export function StickerPickerPanel({
               setError(null);
               try {
                 const dataUrl = await readFileAsDataUrl(file);
-                const created = await api.createSticker(dataUrl, newName.trim());
-                const meta: StickerMeta = { id: created.id, name: created.name ?? "", mimeType: created.mimeType ?? "image/gif", createdAt: new Date().toISOString() };
+                const created = roomId
+                  ? await api.createRoomSticker(roomId, dataUrl, newName.trim())
+                  : await api.createSticker(dataUrl, newName.trim());
+                const meta: StickerMeta = {
+                  id: created.id,
+                  name: created.name ?? "",
+                  mimeType: created.mimeType ?? "image/gif",
+                  createdAt: new Date().toISOString(),
+                  createdBy: (created as any).createdBy ?? undefined,
+                };
                 setItems((prev) => [meta, ...prev]);
                 setNewName("");
               } catch (e2: any) {
@@ -737,8 +748,16 @@ export function StickerPickerPanel({
               setError(null);
               try {
                 const dataUrl = await readFileAsDataUrl(file);
-                const created = await api.createSticker(dataUrl, newName.trim());
-                const meta: StickerMeta = { id: created.id, name: created.name ?? "", mimeType: created.mimeType ?? "image/gif", createdAt: new Date().toISOString() };
+                const created = roomId
+                  ? await api.createRoomSticker(roomId, dataUrl, newName.trim())
+                  : await api.createSticker(dataUrl, newName.trim());
+                const meta: StickerMeta = {
+                  id: created.id,
+                  name: created.name ?? "",
+                  mimeType: created.mimeType ?? "image/gif",
+                  createdAt: new Date().toISOString(),
+                  createdBy: (created as any).createdBy ?? undefined,
+                };
                 setItems((prev) => [meta, ...prev]);
                 setNewName("");
               } catch (e2: any) {
@@ -833,15 +852,16 @@ export function StickerPickerPanel({
                         e.preventDefault();
                         e.stopPropagation();
                         if (!window.confirm("このスタンプを削除しますか？（リアクションからも消えます）")) return;
-                        void (async () => {
-                          setDeletingId(s.id);
-                          setError(null);
-                          try {
-                            await api.deleteSticker(s.id);
-                            setItems((prev) => prev.filter((x) => x.id !== s.id));
-                            setRecents((prev) => {
-                              const next = prev.filter((x) => x !== s.id);
-                              safeWriteRecent(storageKey, next);
+                          void (async () => {
+                            setDeletingId(s.id);
+                            setError(null);
+                            try {
+                              if (roomId) await api.deleteRoomSticker(roomId, s.id);
+                              else await api.deleteSticker(s.id);
+                              setItems((prev) => prev.filter((x) => x.id !== s.id));
+                              setRecents((prev) => {
+                                const next = prev.filter((x) => x !== s.id);
+                                safeWriteRecent(storageKey, next);
                               return next;
                             });
                             setFavorites((prev) => {
@@ -899,8 +919,16 @@ export function StickerPickerPanel({
             setCreating(true);
             setError(null);
             try {
-              const created = await api.createSticker(pngDataUrl, newName.trim());
-              const meta: StickerMeta = { id: created.id, name: created.name ?? "", mimeType: created.mimeType ?? "image/png", createdAt: new Date().toISOString() };
+              const created = roomId
+                ? await api.createRoomSticker(roomId, pngDataUrl, newName.trim())
+                : await api.createSticker(pngDataUrl, newName.trim());
+              const meta: StickerMeta = {
+                id: created.id,
+                name: created.name ?? "",
+                mimeType: created.mimeType ?? "image/png",
+                createdAt: new Date().toISOString(),
+                createdBy: (created as any).createdBy ?? undefined,
+              };
               setItems((prev) => [meta, ...prev]);
               setNewName("");
             } catch (e: any) {

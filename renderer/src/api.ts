@@ -96,7 +96,7 @@ export type Message = {
   poll?: Poll | null;
 };
 
-export type StickerMeta = { id: string; name: string; mimeType: string; createdAt: string };
+export type StickerMeta = { id: string; name: string; mimeType: string; createdAt: string; createdBy?: string };
 
 export type Poll = {
   id: string;
@@ -446,6 +446,11 @@ export const api = {
   listStickers: () => getJson<StickerMeta[]>("/stickers"),
   createSticker: (dataUrl: string, name?: string) => postJson<{ id: string; name: string; mimeType: string }>("/stickers", { dataUrl, name: name ?? "" }),
   deleteSticker: (stickerId: string) => deleteJson<{ ok: true }>(`/stickers/${encodeURIComponent(stickerId)}`),
+  listRoomStickers: (roomId: string) => getJson<StickerMeta[]>(`/rooms/${encodeURIComponent(roomId)}/stickers`),
+  createRoomSticker: (roomId: string, dataUrl: string, name?: string) =>
+    postJson<{ id: string; name: string; mimeType: string; createdBy: string }>(`/rooms/${encodeURIComponent(roomId)}/stickers`, { dataUrl, name: name ?? "" }),
+  deleteRoomSticker: (roomId: string, stickerId: string) =>
+    deleteJson<{ ok: true }>(`/rooms/${encodeURIComponent(roomId)}/stickers/${encodeURIComponent(stickerId)}`),
   fetchStickerBlob: async (stickerId: string): Promise<Blob> => {
     const base = apiBase();
     const res = await fetch(`${base}/stickers/${encodeURIComponent(stickerId)}`, { headers: authHeaders() });

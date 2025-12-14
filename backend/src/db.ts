@@ -232,6 +232,7 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS stickers (
       id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      room_id TEXT REFERENCES rooms(id) ON DELETE CASCADE,
       name TEXT NOT NULL DEFAULT '',
       mime_type TEXT NOT NULL,
       data BYTEA NOT NULL,
@@ -240,6 +241,9 @@ export async function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_stickers_owner_created_at
       ON stickers(owner_id, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_stickers_room_created_at
+      ON stickers(room_id, created_at DESC);
 
     -- room bans
     CREATE TABLE IF NOT EXISTS room_bans (

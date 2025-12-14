@@ -1060,7 +1060,15 @@ export function MessageArea({
                     {formatTime(msg.created_at)}
                   </span>
                 </div>
-                <div style={{ fontSize: 14, lineHeight: 1.4, wordWrap: "break-word" as any }}>
+                <div
+                  style={{
+                    fontSize: 14,
+                    lineHeight: 1.4,
+                    whiteSpace: "pre-wrap",
+                    overflowWrap: "anywhere",
+                    wordWrap: "break-word" as any,
+                  }}
+                >
                   {editFor?.id === msg.id ? (
                     <div style={{ display: "grid", gap: 8 }}>
                       <textarea
@@ -1801,7 +1809,7 @@ export function MessageArea({
                         {new Date(it.created_at).toLocaleString()}
                       </div>
                     </div>
-                    <div style={{ fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
+                    <div style={{ fontSize: 13, lineHeight: 1.4, whiteSpace: "pre-wrap", overflowWrap: "anywhere", opacity: 0.95 }}>
                       {renderTextWithLinksAndHighlights(
                         it.content.length > 180 ? `${it.content.slice(0, 180)}…` : it.content,
                         searchQ

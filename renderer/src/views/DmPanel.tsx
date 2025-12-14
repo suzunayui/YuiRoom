@@ -178,7 +178,9 @@ export function DmPanel({
                   {new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
-              <div style={{ fontSize: 14, lineHeight: 1.4, wordWrap: "break-word" as any }}>{renderTextWithLinks(msg.content)}</div>
+              <div style={{ fontSize: 14, lineHeight: 1.4, whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordWrap: "break-word" as any }}>
+                {renderTextWithLinks(msg.content)}
+              </div>
 
               {msg.reactions && msg.reactions.length > 0 && (
                 <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -415,7 +417,7 @@ export function DmPanel({
                       <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.author}</div>
                       <div style={{ color: "#8e9297", fontSize: 12, flexShrink: 0 }}>{new Date(it.created_at).toLocaleString()}</div>
                     </div>
-                    <div style={{ fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
+                    <div style={{ fontSize: 13, lineHeight: 1.4, whiteSpace: "pre-wrap", overflowWrap: "anywhere", opacity: 0.95 }}>
                       {renderTextWithLinksAndHighlights(it.content.length > 180 ? `${it.content.slice(0, 180)}…` : it.content, dmSearchQ)}
                     </div>
                   </button>

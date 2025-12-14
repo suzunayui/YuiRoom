@@ -5,6 +5,7 @@ type Props = {
   members: RoomMember[];
   loading: boolean;
   error: string | null;
+  width?: number;
   onMemberClick?: (member: { userId: string; displayName: string; hasAvatar: boolean }) => void;
 };
 
@@ -16,14 +17,16 @@ function byName(a: RoomMember, b: RoomMember) {
   return 0;
 }
 
-export function MemberPane({ members, loading, error, onMemberClick }: Props) {
+export function MemberPane({ members, loading, error, width, onMemberClick }: Props) {
   const online = members.filter((m) => !!m.online).sort(byName);
   const offline = members.filter((m) => !m.online).sort(byName);
+  const w = width ?? 240;
 
   return (
     <div
       style={{
-        width: 240,
+        width: w,
+        minWidth: w,
         background: "#2f3136",
         color: "#dcddde",
         borderLeft: "1px solid #202225",

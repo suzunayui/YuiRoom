@@ -863,11 +863,13 @@ export function MessageArea({
   return (
     <div style={{
       flex: 1,
+      minWidth: 0,
       background: "#36393f",
       color: "#dcddde",
       display: "flex",
       flexDirection: "column",
       height: "var(--app-height)",
+      overflowX: "hidden",
     }}>
       {/* チャンネルヘッダー */}
       <div style={{
@@ -914,6 +916,7 @@ export function MessageArea({
           flex: 1,
           padding: "16px",
           overflowY: "auto",
+          overflowX: "hidden",
         }}
         onScroll={(e) => {
           const el = e.currentTarget;
@@ -1168,6 +1171,8 @@ export function MessageArea({
                             display: "flex",
                             alignItems: "center",
                             gap: 8,
+                            maxWidth: "100%",
+                            minWidth: 0,
                           }}
                           title="スタンプリアクション"
                         >
@@ -1189,10 +1194,14 @@ export function MessageArea({
                           display: "flex",
                           alignItems: "center",
                           gap: 6,
+                          maxWidth: "100%",
+                          minWidth: 0,
                         }}
                         title="リアクション"
                       >
-                        <span>{r.emoji}</span>
+                        <span style={{ overflowWrap: "anywhere", wordBreak: "break-all", minWidth: 0 }}>
+                          {r.emoji}
+                        </span>
                         <span style={{ opacity: 0.9 }}>{r.count}</span>
                       </button>
                       )

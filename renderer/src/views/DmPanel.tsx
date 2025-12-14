@@ -205,6 +205,8 @@ export function DmPanel({
                           display: "flex",
                           alignItems: "center",
                           gap: 8,
+                          maxWidth: "100%",
+                          minWidth: 0,
                         }}
                         title="スタンプリアクション"
                       >
@@ -226,10 +228,14 @@ export function DmPanel({
                         display: "flex",
                         alignItems: "center",
                         gap: 6,
+                        maxWidth: "100%",
+                        minWidth: 0,
                       }}
                       title="リアクション"
                     >
-                      <span>{r.emoji}</span>
+                      <span style={{ overflowWrap: "anywhere", wordBreak: "break-all", minWidth: 0 }}>
+                        {r.emoji}
+                      </span>
                       <span style={{ opacity: 0.9 }}>{r.count}</span>
                     </button>
                     )

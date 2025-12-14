@@ -4,6 +4,7 @@ type Props = {
   tree: RoomTree;
   selectedChannelId: string | null;
   onSelectChannel: (id: string) => void;
+  width?: number;
   unreadByChannelId?: Record<string, boolean>;
   notifications?: Array<{ id: string; kind: "dm" | "mention"; title: string; body: string; at: number }>;
   onOpenNotification?: (id: string) => void;
@@ -23,6 +24,7 @@ export function ChannelList({
   tree,
   selectedChannelId,
   onSelectChannel,
+  width,
   unreadByChannelId,
   notifications,
   onOpenNotification,
@@ -37,10 +39,11 @@ export function ChannelList({
   currentUserAvatarUrl,
   onOpenSettings,
 }: Props) {
+  const w = width ?? 240;
   return (
     <div style={{
-      width: 240,
-      minWidth: 240,
+      width: w,
+      minWidth: w,
       flexShrink: 0,
       background: "#2f3136",
       color: "#dcddde",

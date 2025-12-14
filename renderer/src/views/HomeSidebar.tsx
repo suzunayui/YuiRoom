@@ -7,6 +7,7 @@ type Props = {
   homeAuditBusy: boolean;
   homeError: string | null;
   addFriendOpen: boolean;
+  width?: number;
 
   homeLoading: boolean;
   friends: FriendUser[];
@@ -25,6 +26,7 @@ export function HomeSidebar(props: Props) {
     homeAuditBusy,
     homeError,
     addFriendOpen,
+    width,
     homeLoading,
     friends,
     openDmWith,
@@ -33,11 +35,13 @@ export function HomeSidebar(props: Props) {
     acceptRequest,
     rejectRequest,
   } = props;
+  const w = width ?? 260;
 
   return (
     <div
       style={{
-        width: 260,
+        width: w,
+        minWidth: w,
         background: "#2f3136",
         borderRight: "1px solid #202225",
         height: "var(--app-height)",
@@ -313,4 +317,3 @@ export function HomeSidebar(props: Props) {
     </div>
   );
 }
-

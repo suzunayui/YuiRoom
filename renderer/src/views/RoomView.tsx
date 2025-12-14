@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { ChannelList } from "../ChannelList";
 import { DmPanel } from "./DmPanel";
 import { HomeSidebar } from "./HomeSidebar";
@@ -5,6 +6,29 @@ import { MemberPane } from "../MemberPane";
 import { MessageArea } from "../MessageArea";
 import { MobileDrawers } from "./MobileDrawers";
 import { ServerList } from "../ServerList";
+
+function readNumber(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeNumber(key: string, value: number) {
+  try {
+    localStorage.setItem(key, String(Math.round(value)));
+  } catch {
+    // ignore
+  }
+}
+
+function clamp(v: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, v));
+}
 
 export function RoomView(props: any) {
   const {
@@ -100,8 +124,78 @@ export function RoomView(props: any) {
 
   if (!authed) return null;
 
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  const [channelSidebarWidth, setChannelSidebarWidth] = useState(() => readNumber("yuiroom.ui.channelSidebarWidth", 240));
+  const [homeSidebarWidth, setHomeSidebarWidth] = useState(() => readNumber("yuiroom.ui.homeSidebarWidth", 260));
+  const [memberPaneWidth, setMemberPaneWidth] = useState(() => readNumber("yuiroom.ui.memberPaneWidth", 240));
+
+  const [drag, setDrag] = useState<
+    | null
+    | { kind: "channelLeft"; startX: number; startW: number }
+    | { kind: "homeLeft"; startX: number; startW: number }
+    | { kind: "memberRight"; startX: number; startW: number }
+  >(null);
+
+  useEffect(() => {
+    if (!drag) return;
+    const activeDrag = drag;
+    function onMove(e: PointerEvent) {
+      const dx = e.clientX - activeDrag.startX;
+      const rootW = rootRef.current?.getBoundingClientRect?.().width ?? window.innerWidth;
+      const serverW = !isNarrow && rooms ? 72 : 0;
+      const minCenter = 360;
+
+      if (activeDrag.kind === "channelLeft") {
+        const maxW = Math.max(200, rootW - serverW - memberPaneWidth - minCenter);
+        const next = clamp(activeDrag.startW + dx, 200, Math.min(520, maxW));
+        setChannelSidebarWidth(next);
+      } else if (activeDrag.kind === "homeLeft") {
+        const maxW = Math.max(220, rootW - serverW - minCenter);
+        const next = clamp(activeDrag.startW + dx, 220, Math.min(560, maxW));
+        setHomeSidebarWidth(next);
+      } else if (activeDrag.kind === "memberRight") {
+        const maxW = Math.max(200, rootW - serverW - channelSidebarWidth - minCenter);
+        const next = clamp(activeDrag.startW - dx, 200, Math.min(520, maxW));
+        setMemberPaneWidth(next);
+      }
+    }
+    function onUp() {
+      setDrag(null);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [drag, isNarrow, rooms, memberPaneWidth, channelSidebarWidth]);
+
+  useEffect(() => writeNumber("yuiroom.ui.channelSidebarWidth", channelSidebarWidth), [channelSidebarWidth]);
+  useEffect(() => writeNumber("yuiroom.ui.homeSidebarWidth", homeSidebarWidth), [homeSidebarWidth]);
+  useEffect(() => writeNumber("yuiroom.ui.memberPaneWidth", memberPaneWidth), [memberPaneWidth]);
+
+  const dividerStyle: any = {
+    width: 6,
+    cursor: "col-resize",
+    background: "transparent",
+    flexShrink: 0,
+    position: "relative",
+  };
+  const dividerLineStyle: any = {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 2,
+    width: 2,
+    background: "rgba(255,255,255,0.08)",
+  };
+
   return (
     <div
+      ref={rootRef}
       style={{
         display: "flex",
         position: "fixed",
@@ -128,6 +222,7 @@ export function RoomView(props: any) {
       {selectedRoomId === HOME_ID ? (
         !isNarrow ? (
           <HomeSidebar
+            width={homeSidebarWidth}
             openAddFriend={openAddFriend}
             openHomeAudit={openHomeAudit}
             homeAuditBusy={homeAuditBusy}
@@ -144,6 +239,7 @@ export function RoomView(props: any) {
         ) : null
       ) : !isNarrow && tree ? (
         <ChannelList
+          width={channelSidebarWidth}
           tree={tree}
           selectedChannelId={selectedChannelId}
           onSelectChannel={selectChannelAndMarkRead}
@@ -177,6 +273,36 @@ export function RoomView(props: any) {
           currentUserAvatarUrl={currentUserAvatarUrl}
           onOpenSettings={currentUserId ? openSettings : undefined}
         />
+      ) : null}
+
+      {!isNarrow && selectedRoomId === HOME_ID ? (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="ドラッグで幅を調整"
+          style={dividerStyle}
+          onPointerDown={(e) => {
+            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+            setDrag({ kind: "homeLeft", startX: e.clientX, startW: homeSidebarWidth });
+          }}
+        >
+          <div style={dividerLineStyle} />
+        </div>
+      ) : null}
+
+      {!isNarrow && selectedRoomId !== HOME_ID && tree ? (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="ドラッグで幅を調整"
+          style={dividerStyle}
+          onPointerDown={(e) => {
+            (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+            setDrag({ kind: "channelLeft", startX: e.clientX, startW: channelSidebarWidth });
+          }}
+        >
+          <div style={dividerLineStyle} />
+        </div>
       ) : null}
 
       {selectedRoomId === HOME_ID ? (
@@ -236,12 +362,27 @@ export function RoomView(props: any) {
             }}
           />
           {!isNarrow && (
-            <MemberPane
-              members={memberPane}
-              loading={memberPaneLoading}
-              error={memberPaneError}
-              onMemberClick={(m) => openUserActions(m.userId, { displayName: m.displayName, hasAvatar: m.hasAvatar })}
-            />
+            <>
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                title="ドラッグで幅を調整"
+                style={dividerStyle}
+                onPointerDown={(e) => {
+                  (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+                  setDrag({ kind: "memberRight", startX: e.clientX, startW: memberPaneWidth });
+                }}
+              >
+                <div style={dividerLineStyle} />
+              </div>
+              <MemberPane
+                width={memberPaneWidth}
+                members={memberPane}
+                loading={memberPaneLoading}
+                error={memberPaneError}
+                onMemberClick={(m) => openUserActions(m.userId, { displayName: m.displayName, hasAvatar: m.hasAvatar })}
+              />
+            </>
           )}
         </div>
       )}

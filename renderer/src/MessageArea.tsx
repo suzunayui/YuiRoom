@@ -127,6 +127,8 @@ function AttachmentImage({
 function AttachmentVideo({ attachmentId, mimeType }: { attachmentId: string; mimeType: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [blobSize, setBlobSize] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -134,6 +136,8 @@ function AttachmentVideo({ attachmentId, mimeType }: { attachmentId: string; mim
 
     setUrl(null);
     setFailed(false);
+    setErrorDetail(null);
+    setBlobSize(null);
 
     void (async () => {
       try {
@@ -142,9 +146,11 @@ function AttachmentVideo({ attachmentId, mimeType }: { attachmentId: string; mim
         const normalized = blob.type ? blob : new Blob([blob], { type: mimeType });
         objectUrl = URL.createObjectURL(normalized);
         setUrl(objectUrl);
-      } catch {
+        setBlobSize(normalized.size);
+      } catch (e: any) {
         if (!active) return;
         setFailed(true);
+        setErrorDetail(String(e?.message ?? "fetch_failed"));
       }
     })();
 
@@ -155,6 +161,18 @@ function AttachmentVideo({ attachmentId, mimeType }: { attachmentId: string; mim
   }, [attachmentId]);
 
   if (failed) {
+    const mp4Support = (() => {
+      try {
+        if (typeof document === "undefined") return "";
+        const v = document.createElement("video");
+        return v.canPlayType("video/mp4") || "";
+      } catch {
+        return "";
+      }
+    })();
+
+    const looksLikeCodecIssue = errorDetail?.startsWith("media_error_3") || errorDetail?.startsWith("media_error_4");
+
     return (
       <div
         style={{
@@ -168,7 +186,25 @@ function AttachmentVideo({ attachmentId, mimeType }: { attachmentId: string; mim
           fontSize: 12,
         }}
       >
-        動画の読み込みに失敗しました
+        <div>動画の読み込みに失敗しました</div>
+        {errorDetail && <div style={{ marginTop: 6, opacity: 0.85 }}>reason: {errorDetail}</div>}
+        {!!mimeType && <div style={{ marginTop: 6, opacity: 0.85 }}>type: {mimeType}</div>}
+        {blobSize != null && <div style={{ marginTop: 6, opacity: 0.85 }}>size: {blobSize} bytes</div>}
+        {mp4Support && <div style={{ marginTop: 6, opacity: 0.85 }}>canPlayType(video/mp4): {mp4Support}</div>}
+        {looksLikeCodecIssue && (
+          <div style={{ marginTop: 8, color: "#c7cbd1" }}>
+            このMP4は未対応コーデックの可能性があります（H.264/AAC で再エンコードすると再生できることが多いです）
+          </div>
+        )}
+        {url && (
+          <a
+            href={url}
+            download="video.mp4"
+            style={{ display: "inline-block", marginTop: 8, color: "#8ea1e1", fontWeight: 900, textDecoration: "none" }}
+          >
+            ダウンロード
+          </a>
+        )}
       </div>
     );
   }
@@ -194,7 +230,16 @@ function AttachmentVideo({ attachmentId, mimeType }: { attachmentId: string; mim
       controls
       playsInline
       preload="metadata"
-      onError={() => setFailed(true)}
+      onError={(e) => {
+        try {
+          const mediaError = (e.currentTarget as HTMLVideoElement).error;
+          const code = mediaError?.code ?? 0;
+          setErrorDetail(`media_error_${code}`);
+        } catch {
+          setErrorDetail("media_error");
+        }
+        setFailed(true);
+      }}
       style={{
         maxWidth: 420,
         width: "100%",

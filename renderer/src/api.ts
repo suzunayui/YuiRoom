@@ -95,6 +95,8 @@ export type Message = {
   reactions?: Array<{ emoji: string; count: number; byMe: boolean }>;
 };
 
+export type StickerMeta = { id: string; name: string; mimeType: string; createdAt: string };
+
 function apiBase() {
   return (import.meta as any).env?.VITE_API_BASE ?? "http://localhost:3000";
 }
@@ -428,4 +430,15 @@ export const api = {
     ),
   sendDmMessage: (threadId: string, content: string) =>
     postJson<DmMessage>(`/dm/threads/${encodeURIComponent(threadId)}/messages`, { content }),
+
+  // stickers
+  listStickers: () => getJson<StickerMeta[]>("/stickers"),
+  createSticker: (dataUrl: string, name?: string) => postJson<{ id: string; name: string; mimeType: string }>("/stickers", { dataUrl, name: name ?? "" }),
+  deleteSticker: (stickerId: string) => deleteJson<{ ok: true }>(`/stickers/${encodeURIComponent(stickerId)}`),
+  fetchStickerBlob: async (stickerId: string): Promise<Blob> => {
+    const base = apiBase();
+    const res = await fetch(`${base}/stickers/${encodeURIComponent(stickerId)}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error("sticker_not_found");
+    return res.blob();
+  },
 };

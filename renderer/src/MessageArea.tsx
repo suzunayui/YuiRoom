@@ -5,6 +5,8 @@ import { realtime } from "./realtime";
 import { Modal } from "./Modal";
 import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "./linkify";
 import { EmojiPickerModal } from "./modals/EmojiPickerModal";
+import { StickerPickerModal } from "./modals/StickerPickerModal";
+import { parseStickerIdFromReaction, StickerImg } from "./stickers";
 
 type Props = {
   roomId?: string | null;
@@ -289,6 +291,7 @@ export function MessageArea({
   const [replyTo, setReplyTo] = useState<null | { id: string; author: string; content: string }>(null);
   const [pendingAttachment, setPendingAttachment] = useState<null | { dataUrl: string; mime: string }>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
+  const [stickerPickerFor, setStickerPickerFor] = useState<string | null>(null);
   const [deleteModalFor, setDeleteModalFor] = useState<null | { id: string; author: string; content: string }>(null);
   const [deleting, setDeleting] = useState(false);
   const [editFor, setEditFor] = useState<null | { id: string; text: string }>(null);
@@ -344,6 +347,7 @@ export function MessageArea({
           setReplyTo(null);
           setPendingAttachment(null);
           setReactionPickerFor(null);
+          setStickerPickerFor(null);
           setDeleteModalFor(null);
           setEditFor(null);
           setImageModalSrc(null);
@@ -1149,6 +1153,28 @@ export function MessageArea({
                 {msg.reactions && msg.reactions.length > 0 && (
                   <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
                     {msg.reactions.map((r) => (
+                      parseStickerIdFromReaction(r.emoji) ? (
+                        <button
+                          key={r.emoji}
+                          onClick={() => toggleReaction(msg.id, r.emoji)}
+                          style={{
+                            border: "1px solid #40444b",
+                            background: r.byMe ? "#40444b" : "transparent",
+                            color: "#dcddde",
+                            borderRadius: 12,
+                            padding: "4px 8px",
+                            fontSize: 12,
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                          }}
+                          title="スタンプリアクション"
+                        >
+                          <StickerImg stickerId={parseStickerIdFromReaction(r.emoji) as string} size={22} />
+                          <span style={{ opacity: 0.9 }}>{r.count}</span>
+                        </button>
+                      ) : (
                       <button
                         key={r.emoji}
                         onClick={() => toggleReaction(msg.id, r.emoji)}
@@ -1169,6 +1195,7 @@ export function MessageArea({
                         <span>{r.emoji}</span>
                         <span style={{ opacity: 0.9 }}>{r.count}</span>
                       </button>
+                      )
                     ))}
                   </div>
                 )}
@@ -1202,6 +1229,21 @@ export function MessageArea({
                     title="リアクションを追加"
                   >
                     リアクション
+                  </button>
+
+                  <button
+                    onClick={() => setStickerPickerFor((prev) => (prev === msg.id ? null : msg.id))}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "#8e9297",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      padding: 0,
+                    }}
+                    title="スタンプを追加"
+                  >
+                    スタンプ
                   </button>
 
                   {(currentUserId && (msg.author_id === currentUserId || canModerate) && editFor?.id !== msg.id) && (
@@ -1262,6 +1304,16 @@ export function MessageArea({
           const id = reactionPickerFor;
           if (!id) return;
           void pickReaction(id, emoji);
+        }}
+      />
+
+      <StickerPickerModal
+        open={!!stickerPickerFor}
+        onClose={() => setStickerPickerFor(null)}
+        onPick={(stickerId) => {
+          const id = stickerPickerFor;
+          if (!id) return;
+          void pickReaction(id, `sticker:${stickerId}`);
         }}
       />
 

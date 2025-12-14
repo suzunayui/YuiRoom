@@ -768,8 +768,18 @@ function validateEmoji(emoji: unknown) {
   if (typeof emoji !== "string") return "emoji_must_be_string";
   const v = emoji.trim();
   if (!v) return "emoji_required";
-  if (v.length > 16) return "emoji_too_long";
   if (/\s/.test(v)) return "emoji_no_spaces";
+
+  if (v.startsWith("sticker:")) {
+    const id = v.slice("sticker:".length);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return "sticker_invalid";
+    }
+    if (v.length > 80) return "emoji_too_long";
+    return null;
+  }
+
+  if (v.length > 16) return "emoji_too_long";
   return null;
 }
 
@@ -993,6 +1003,99 @@ function parseDataUrlImage(dataUrl: string): { mime: string; bytes: Buffer } | n
 
 // health
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// --- Stickers (user-defined stamps) ---
+
+app.get(
+  "/stickers",
+  requireAuth,
+  rateLimit({ name: "stickers_list", windowMs: 10_000, max: 30, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const r = await pool.query(
+      `SELECT id, name, mime_type, created_at
+       FROM stickers
+       WHERE owner_id=$1
+       ORDER BY created_at DESC
+       LIMIT 200`,
+      [me]
+    );
+    res.json(
+      r.rows.map((row) => ({
+        id: String(row.id),
+        name: String(row.name ?? ""),
+        mimeType: String(row.mime_type ?? ""),
+        createdAt: new Date(row.created_at).toISOString(),
+      }))
+    );
+  }
+);
+
+app.post(
+  "/stickers",
+  requireAuth,
+  rateLimit({ name: "stickers_create", windowMs: 60_000, max: 30, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const dataUrl = req.body?.dataUrl;
+    if (typeof dataUrl !== "string") return res.status(400).json({ error: "sticker_dataUrl_required" });
+    const parsed = parseDataUrlImage(String(dataUrl));
+    if (!parsed) return res.status(400).json({ error: "sticker_invalid_dataUrl" });
+    if (parsed.bytes.length > 600_000) return res.status(400).json({ error: "sticker_too_large" });
+
+    const nameRaw = typeof req.body?.name === "string" ? String(req.body.name) : "";
+    const name = nameRaw.trim().slice(0, 32);
+
+    const id = randomUUID();
+    await pool.query(
+      `INSERT INTO stickers (id, owner_id, name, mime_type, data)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [id, me, name, parsed.mime, parsed.bytes]
+    );
+    res.status(201).json({ id, name, mimeType: parsed.mime });
+  }
+);
+
+app.delete(
+  "/stickers/:stickerId",
+  requireAuth,
+  rateLimit({ name: "stickers_delete", windowMs: 60_000, max: 60, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const stickerId = String(req.params.stickerId || "");
+    if (!stickerId) return res.status(400).json({ error: "stickerId_required" });
+
+    const del = await pool.query(`DELETE FROM stickers WHERE id=$1 AND owner_id=$2`, [stickerId, me]);
+    if ((del.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
+
+    const emoji = `sticker:${stickerId}`;
+    await pool.query(`DELETE FROM message_reactions WHERE emoji=$1`, [emoji]);
+    await pool.query(`DELETE FROM dm_message_reactions WHERE emoji=$1`, [emoji]);
+
+    res.json({ ok: true });
+  }
+);
+
+app.get(
+  "/stickers/:stickerId",
+  requireAuth,
+  rateLimit({ name: "stickers_get", windowMs: 60_000, max: 300, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const stickerId = String(req.params.stickerId || "");
+    if (!stickerId) return res.status(400).json({ error: "stickerId_required" });
+
+    const r = await pool.query(`SELECT mime_type, data FROM stickers WHERE id=$1`, [stickerId]);
+    if ((r.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
+
+    const mime = String(r.rows?.[0]?.mime_type || "application/octet-stream");
+    const data = r.rows?.[0]?.data as Buffer;
+
+    res.setHeader("cache-control", "private, max-age=60");
+    res.setHeader("content-disposition", "inline");
+    res.setHeader("content-type", mime);
+    res.send(data);
+  }
+);
 
 // --- Friends / DM (Home) ---
 
@@ -1446,9 +1549,9 @@ app.post(
     const messageId = String(req.params.messageId || "");
     if (!messageId) return res.status(400).json({ error: "messageId_required" });
 
-    const emoji = String(req.body?.emoji ?? "").trim();
-    if (!emoji) return res.status(400).json({ error: "emoji_required" });
-    if (emoji.length > 16) return res.status(400).json({ error: "emoji_too_long" });
+    const emojiErr = validateEmoji(req.body?.emoji);
+    if (emojiErr) return res.status(400).json({ error: emojiErr });
+    const emoji = String(req.body.emoji).trim();
 
     const msg = await pool.query(`SELECT id, thread_id FROM dm_messages WHERE id=$1`, [messageId]);
     if ((msg.rowCount ?? 0) === 0) return res.status(404).json({ error: "message_not_found" });
@@ -1475,6 +1578,11 @@ app.post(
         [messageId, me, emoji]
       );
     } else {
+      if (emoji.startsWith("sticker:")) {
+        const stickerId = emoji.slice("sticker:".length);
+        const s = await pool.query(`SELECT 1 FROM stickers WHERE id=$1`, [stickerId]);
+        if ((s.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
+      }
       await pool.query(
         `INSERT INTO dm_message_reactions (id, message_id, user_id, emoji) VALUES ($1, $2, $3, $4)`,
         [randomUUID(), messageId, me, emoji]
@@ -2858,6 +2966,11 @@ app.post(
       [messageId, author, emoji]
     );
   } else {
+    if (emoji.startsWith("sticker:")) {
+      const stickerId = emoji.slice("sticker:".length);
+      const s = await pool.query(`SELECT 1 FROM stickers WHERE id=$1`, [stickerId]);
+      if ((s.rowCount ?? 0) === 0) return res.status(404).json({ error: "sticker_not_found" });
+    }
     await pool.query(
       `INSERT INTO message_reactions (id, message_id, author, emoji)
        VALUES ($1, $2, $3, $4)`,

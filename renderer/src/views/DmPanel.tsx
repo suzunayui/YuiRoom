@@ -1,9 +1,11 @@
-import type { RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { api } from "../api";
 import type { DmMessage, DmSearchMessage } from "../api";
 import { Modal } from "../Modal";
 import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "../linkify";
 import { EmojiPickerModal } from "../modals/EmojiPickerModal";
+import { StickerPickerModal } from "../modals/StickerPickerModal";
+import { parseStickerIdFromReaction, StickerImg } from "../stickers";
 
 type Props = {
   selectedDmPeerName: string | null;
@@ -70,6 +72,12 @@ export function DmPanel({
   dmSearchInputRef,
   onPickSearchResult,
 }: Props) {
+  const [dmStickerPickerFor, setDmStickerPickerFor] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDmStickerPickerFor(null);
+  }, [selectedDmThreadId]);
+
   return (
     <div
       style={{
@@ -182,6 +190,28 @@ export function DmPanel({
               {msg.reactions && msg.reactions.length > 0 && (
                 <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
                   {msg.reactions.map((r) => (
+                    parseStickerIdFromReaction(r.emoji) ? (
+                      <button
+                        key={r.emoji}
+                        onClick={() => void toggleDmReaction(msg.id, r.emoji)}
+                        style={{
+                          border: "1px solid #40444b",
+                          background: r.byMe ? "#40444b" : "transparent",
+                          color: "#dcddde",
+                          borderRadius: 12,
+                          padding: "4px 8px",
+                          fontSize: 12,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                        title="スタンプリアクション"
+                      >
+                        <StickerImg stickerId={parseStickerIdFromReaction(r.emoji) as string} size={22} />
+                        <span style={{ opacity: 0.9 }}>{r.count}</span>
+                      </button>
+                    ) : (
                     <button
                       key={r.emoji}
                       onClick={() => void toggleDmReaction(msg.id, r.emoji)}
@@ -202,6 +232,7 @@ export function DmPanel({
                       <span>{r.emoji}</span>
                       <span style={{ opacity: 0.9 }}>{r.count}</span>
                     </button>
+                    )
                   ))}
                 </div>
               )}
@@ -220,6 +251,21 @@ export function DmPanel({
                   title="リアクションを追加"
                 >
                   リアクション
+                </button>
+
+                <button
+                  onClick={() => setDmStickerPickerFor((prev) => (prev === msg.id ? null : msg.id))}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "#8e9297",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    padding: 0,
+                  }}
+                  title="スタンプを追加"
+                >
+                  スタンプ
                 </button>
               </div>
 
@@ -244,6 +290,16 @@ export function DmPanel({
           const id = dmReactionPickerFor;
           if (!id) return;
           void toggleDmReaction(id, emoji);
+        }}
+      />
+
+      <StickerPickerModal
+        open={!!dmStickerPickerFor}
+        onClose={() => setDmStickerPickerFor(null)}
+        onPick={(stickerId) => {
+          const id = dmStickerPickerFor;
+          if (!id) return;
+          void toggleDmReaction(id, `sticker:${stickerId}`);
         }}
       />
 

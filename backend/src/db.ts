@@ -192,6 +192,19 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_dm_message_reactions_message_id
       ON dm_message_reactions(message_id);
 
+    -- stickers (user-defined stamps)
+    CREATE TABLE IF NOT EXISTS stickers (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL DEFAULT '',
+      mime_type TEXT NOT NULL,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_stickers_owner_created_at
+      ON stickers(owner_id, created_at DESC);
+
     -- room bans
     CREATE TABLE IF NOT EXISTS room_bans (
       id TEXT PRIMARY KEY,

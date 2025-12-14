@@ -492,10 +492,14 @@ async function readFileAsDataUrl(file: File): Promise<string> {
 
 export function StickerPickerPanel({
   roomId,
+  currentUserId,
+  canModerate,
   selected,
   onPick,
 }: {
   roomId?: string | null;
+  currentUserId?: string | null;
+  canModerate?: boolean;
   selected?: Set<string>;
   onPick: (stickerId: string) => void | Promise<void>;
 }) {
@@ -785,6 +789,7 @@ export function StickerPickerPanel({
             {shown.map((s) => {
               const reactionKey = `sticker:${s.id}`;
               const active = selected?.has(reactionKey);
+              const canDelete = roomId ? (!!canModerate || (!!currentUserId && s.createdBy === currentUserId)) : true;
               return (
                 <div key={s.id} style={{ position: "relative" }}>
                   <button
@@ -851,11 +856,12 @@ export function StickerPickerPanel({
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        if (!canDelete) return;
                         if (!window.confirm("このスタンプを削除しますか？（リアクションからも消えます）")) return;
-                          void (async () => {
-                            setDeletingId(s.id);
-                            setError(null);
-                            try {
+                        void (async () => {
+                          setDeletingId(s.id);
+                          setError(null);
+                          try {
                               if (roomId) await api.deleteRoomSticker(roomId, s.id);
                               else await api.deleteSticker(s.id);
                               setItems((prev) => prev.filter((x) => x.id !== s.id));
@@ -877,7 +883,7 @@ export function StickerPickerPanel({
                           }
                         })();
                       }}
-                      disabled={deletingId === s.id}
+                      disabled={deletingId === s.id || !canDelete}
                       style={{
                         position: "absolute",
                         top: 6,
@@ -888,12 +894,12 @@ export function StickerPickerPanel({
                         border: "1px solid #40444b",
                         background: deletingId === s.id ? "#2f3136" : "#202225",
                         color: "#ff7a7a",
-                        cursor: deletingId === s.id ? "not-allowed" : "pointer",
+                        cursor: deletingId === s.id || !canDelete ? "not-allowed" : "pointer",
                         fontWeight: 900,
                         lineHeight: 1,
-                        opacity: deletingId === s.id ? 0.6 : 1,
+                        opacity: deletingId === s.id || !canDelete ? 0.5 : 1,
                       }}
-                      title="削除"
+                      title={canDelete ? "削除" : "削除できません（作成者/ownerのみ）"}
                       aria-label="スタンプを削除"
                     >
                       ×

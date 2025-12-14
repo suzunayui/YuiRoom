@@ -1427,6 +1427,8 @@ export function MessageArea({
         open={!!reactionPickerFor}
         title="リアクション"
         roomId={roomId}
+        currentUserId={currentUserId}
+        canModerate={canModerate}
         selected={
           reactionPickerFor
             ? new Set(

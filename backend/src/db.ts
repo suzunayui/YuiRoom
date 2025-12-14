@@ -287,7 +287,7 @@ export async function initDb() {
       created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       uses INT NOT NULL DEFAULT 0,
-      max_uses INT NOT NULL DEFAULT 10,
+      max_uses INT NOT NULL DEFAULT 50,
       expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '7 days')
     );
 
@@ -295,10 +295,14 @@ export async function initDb() {
       ON room_invites(room_id, created_at);
 
     ALTER TABLE room_invites
-      ADD COLUMN IF NOT EXISTS max_uses INT NOT NULL DEFAULT 10;
+      ADD COLUMN IF NOT EXISTS max_uses INT NOT NULL DEFAULT 50;
 
     ALTER TABLE room_invites
       ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '7 days');
+
+    -- If already deployed with default=10, bump default for new rows.
+    ALTER TABLE room_invites
+      ALTER COLUMN max_uses SET DEFAULT 50;
 
     -- audit logs (room owner can view)
     CREATE TABLE IF NOT EXISTS audit_logs (

@@ -2368,7 +2368,7 @@ app.post("/rooms/:roomId/invites", requireAuth, async (req, res) => {
     try {
       await pool.query(
         `INSERT INTO room_invites (code, room_id, created_by, max_uses, expires_at)
-         VALUES ($1, $2, $3, 10, (now() + INTERVAL '7 days'))`,
+         VALUES ($1, $2, $3, 50, (now() + INTERVAL '7 days'))`,
         [code, roomId, me]
       );
       break;
@@ -2386,7 +2386,7 @@ app.post("/rooms/:roomId/invites", requireAuth, async (req, res) => {
     action: "invite_create",
     targetType: "invite",
     targetId: code,
-    meta: { maxUses: 10, expiresInDays: 7 },
+    meta: { maxUses: 50, expiresInDays: 7 },
   });
   res.status(201).json({ code, roomId });
 });

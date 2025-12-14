@@ -13,6 +13,7 @@ type RealtimeEvent =
   | { type: "channel_message_updated"; channelId: string; messageId: string; content: string; edited_at: string | null }
   | { type: "channel_message_created"; channelId: string; message: any }
   | { type: "message_reactions_updated"; channelId: string; messageId: string; reactions: any }
+  | { type: "poll_updated"; channelId: string; messageId: string; poll: any }
   | { type: "dm_message_created"; threadId: string; message: any }
   | { type: "dm_reactions_updated"; threadId: string; messageId: string; reactions: any }
   | { type: "home_updated" }
@@ -30,6 +31,7 @@ let opening = false;
 
 const channelHandlers = new Map<SubKey, Set<Handler<any>>>();
 const channelReactionHandlers = new Map<SubKey, Set<Handler<{ messageId: string; reactions: any }>>>();
+const channelPollHandlers = new Map<SubKey, Set<Handler<{ messageId: string; poll: any }>>>();
 const channelDeleteHandlers = new Map<SubKey, Set<Handler<{ messageId: string }>>>();
 const channelUpdateHandlers = new Map<SubKey, Set<Handler<{ messageId: string; content: string; edited_at: string | null }>>>();
 const dmHandlers = new Map<SubKey, Set<Handler<any>>>();
@@ -94,7 +96,7 @@ function ensureConnected() {
   ws.addEventListener("open", () => {
     opening = false;
     // re-subscribe
-    const channelIds = new Set<string>([...channelHandlers.keys(), ...channelReactionHandlers.keys()]);
+    const channelIds = new Set<string>([...channelHandlers.keys(), ...channelReactionHandlers.keys(), ...channelPollHandlers.keys()]);
     for (const channelId of channelIds) wsSend({ type: "subscribe", channelId });
     const threadIds = new Set<string>([...dmHandlers.keys(), ...dmReactionHandlers.keys()]);
     for (const threadId of threadIds) {
@@ -199,6 +201,17 @@ function ensureConnected() {
       const reactions = (data as any).reactions;
       if (!messageId) return;
       for (const h of handlers) h({ messageId, reactions });
+      return;
+    }
+
+    if (data.type === "poll_updated" && typeof (data as any).channelId === "string") {
+      const key = String((data as any).channelId);
+      const handlers = channelPollHandlers.get(key);
+      if (!handlers) return;
+      const messageId = String((data as any).messageId ?? "");
+      const poll = (data as any).poll;
+      if (!messageId) return;
+      for (const h of handlers) h({ messageId, poll });
       return;
     }
 
@@ -320,6 +333,24 @@ export const realtime = {
         channelReactionHandlers.delete(channelId);
         if (!channelHandlers.has(channelId)) wsSend({ type: "unsubscribe", channelId });
       }
+    };
+  },
+
+  subscribeChannelPolls(channelId: string, onUpdate: Handler<{ messageId: string; poll: any }>) {
+    ensureConnected();
+    const key = channelId;
+    let set = channelPollHandlers.get(key);
+    if (!set) {
+      set = new Set();
+      channelPollHandlers.set(key, set);
+      wsSend({ type: "subscribe", channelId });
+    }
+    set.add(onUpdate as any);
+    return () => {
+      const s = channelPollHandlers.get(key);
+      if (!s) return;
+      s.delete(onUpdate as any);
+      if (s.size === 0) channelPollHandlers.delete(key);
     };
   },
 

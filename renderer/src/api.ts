@@ -93,9 +93,16 @@ export type Message = {
   reply?: { id: string; author: string; content: string } | null;
   attachments?: Array<{ id: string; mime_type: string }>;
   reactions?: Array<{ emoji: string; count: number; byMe: boolean }>;
+  poll?: Poll | null;
 };
 
 export type StickerMeta = { id: string; name: string; mimeType: string; createdAt: string };
+
+export type Poll = {
+  id: string;
+  question: string;
+  options: Array<{ id: string; text: string; votes: number; byMe: boolean }>;
+};
 
 function apiBase() {
   return (import.meta as any).env?.VITE_API_BASE ?? "http://localhost:3000";
@@ -374,6 +381,10 @@ export const api = {
       `/messages/${encodeURIComponent(messageId)}/reactions/toggle`,
       { emoji }
     ),
+  createPoll: (channelId: string, question: string, options: string[]) =>
+    postJson<Message>(`/channels/${encodeURIComponent(channelId)}/polls`, { question, options }),
+  votePoll: (pollId: string, optionId: string) =>
+    postJson<{ pollId: string; messageId: string; poll: Poll }>(`/polls/${encodeURIComponent(pollId)}/vote`, { optionId }),
   deleteMessage: (messageId: string) =>
     deleteJson<{ ok: boolean }>(`/messages/${encodeURIComponent(messageId)}`),
   editMessage: (messageId: string, content: string) =>

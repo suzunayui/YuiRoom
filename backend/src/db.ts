@@ -123,6 +123,42 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_messages_channel_created_at
       ON messages(channel_id, created_at);
 
+    -- polls
+    CREATE TABLE IF NOT EXISTS polls (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+      question TEXT NOT NULL,
+      created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_polls_message
+      ON polls(message_id);
+
+    CREATE TABLE IF NOT EXISTS poll_options (
+      id TEXT PRIMARY KEY,
+      poll_id TEXT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      position INT NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_poll_options_poll
+      ON poll_options(poll_id, position);
+
+    CREATE TABLE IF NOT EXISTS poll_votes (
+      poll_id TEXT NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      option_id TEXT NOT NULL REFERENCES poll_options(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(poll_id, user_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_poll_votes_poll
+      ON poll_votes(poll_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_poll_votes_option
+      ON poll_votes(option_id, created_at);
+
     -- friends
     CREATE TABLE IF NOT EXISTS friend_requests (
       id TEXT PRIMARY KEY,

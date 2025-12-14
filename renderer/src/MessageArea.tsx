@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { Message, RoomSearchMessage } from "./api";
+import type { Message, Poll, RoomSearchMessage } from "./api";
 import { realtime } from "./realtime";
 import { Modal } from "./Modal";
 import { renderTextWithLinks, renderTextWithLinksAndHighlights } from "./linkify";
@@ -302,6 +302,13 @@ export function MessageArea({
   const [mentionIndex, setMentionIndex] = useState(0);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
 
+  const [pollCreateOpen, setPollCreateOpen] = useState(false);
+  const [pollQuestion, setPollQuestion] = useState("");
+  const [pollOptions, setPollOptions] = useState<string[]>(["", ""]);
+  const [pollBusy, setPollBusy] = useState(false);
+  const [pollError, setPollError] = useState<string | null>(null);
+  const [pollVoteBusyId, setPollVoteBusyId] = useState<string | null>(null);
+
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   const [searchScope, setSearchScope] = useState<"room" | "channel">("room");
@@ -387,6 +394,45 @@ export function MessageArea({
     setSearchOpen(false);
   }
 
+  function openPollCreate() {
+    if (!selectedChannelId) return;
+    setPollCreateOpen(true);
+    setPollQuestion("");
+    setPollOptions(["", ""]);
+    setPollError(null);
+    setTimeout(() => (document.getElementById("poll_question_input") as HTMLInputElement | null)?.focus(), 0);
+  }
+
+  function closePollCreate() {
+    if (pollBusy) return;
+    setPollCreateOpen(false);
+    setPollError(null);
+  }
+
+  async function submitPollCreate() {
+    if (!selectedChannelId) return;
+    const q = pollQuestion.trim();
+    const opts = pollOptions.map((o) => o.trim()).filter(Boolean);
+    const uniq = Array.from(new Set(opts));
+    if (!q) return setPollError("質問を入力してね");
+    if (uniq.length < 2) return setPollError("選択肢は2つ以上必要です");
+    if (uniq.length > 6) return setPollError("選択肢は最大6つまでです");
+    setPollBusy(true);
+    setPollError(null);
+    try {
+      await api.createPoll(selectedChannelId, q, uniq);
+      setPollCreateOpen(false);
+    } catch (e: any) {
+      setPollError(e?.message ?? "作成に失敗したよ");
+    } finally {
+      setPollBusy(false);
+    }
+  }
+
+  function totalVotes(poll: Poll) {
+    return poll.options.reduce((acc, o) => acc + (o.votes || 0), 0);
+  }
+
   async function runSearch(opts?: { append?: boolean }) {
     if (!roomId) return;
     const q = searchQ.trim();
@@ -445,6 +491,14 @@ export function MessageArea({
     if (!selectedChannelId) return;
     const unsub = realtime.subscribeChannelReactions(selectedChannelId, ({ messageId, reactions }) => {
       setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, reactions } : m)));
+    });
+    return unsub;
+  }, [selectedChannelId]);
+
+  useEffect(() => {
+    if (!selectedChannelId) return;
+    const unsub = realtime.subscribeChannelPolls(selectedChannelId, ({ messageId, poll }) => {
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, poll } : m)));
     });
     return unsub;
   }, [selectedChannelId]);
@@ -886,25 +940,46 @@ export function MessageArea({
           {selectedChannelName ? `# ${selectedChannelName}` : "チャンネル未選択"}
         </div>
         {roomId && (
-          <button
-            type="button"
-            onClick={openSearch}
-            style={{
-              border: "1px solid #40444b",
-              background: "transparent",
-              color: "#b9bbbe",
-              cursor: "pointer",
-              padding: "6px 10px",
-              borderRadius: 999,
-              fontSize: 12,
-              fontWeight: 900,
-              flexShrink: 0,
-            }}
-            title="検索"
-            aria-label="検索"
-          >
-            検索
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={openPollCreate}
+              disabled={!selectedChannelId}
+              style={{
+                border: "1px solid #40444b",
+                background: "transparent",
+                color: "#b9bbbe",
+                cursor: selectedChannelId ? "pointer" : "not-allowed",
+                padding: "6px 10px",
+                borderRadius: 999,
+                fontSize: 12,
+                fontWeight: 900,
+                opacity: selectedChannelId ? 1 : 0.6,
+              }}
+              title="アンケート"
+              aria-label="アンケート"
+            >
+              アンケート
+            </button>
+            <button
+              type="button"
+              onClick={openSearch}
+              style={{
+                border: "1px solid #40444b",
+                background: "transparent",
+                color: "#b9bbbe",
+                cursor: "pointer",
+                padding: "6px 10px",
+                borderRadius: 999,
+                fontSize: 12,
+                fontWeight: 900,
+              }}
+              title="検索"
+              aria-label="検索"
+            >
+              検索
+            </button>
+          </div>
         )}
       </div>
 
@@ -1065,16 +1140,17 @@ export function MessageArea({
                     {formatTime(msg.created_at)}
                   </span>
                 </div>
-                <div
-                  style={{
-                    fontSize: 14,
-                    lineHeight: 1.4,
-                    whiteSpace: "pre-wrap",
-                    overflowWrap: "anywhere",
-                    wordWrap: "break-word" as any,
-                  }}
-                >
-                  {editFor?.id === msg.id ? (
+                {(editFor?.id === msg.id || !msg.poll) && (
+                  <div
+                    style={{
+                      fontSize: 14,
+                      lineHeight: 1.4,
+                      whiteSpace: "pre-wrap",
+                      overflowWrap: "anywhere",
+                      wordWrap: "break-word" as any,
+                    }}
+                  >
+                    {editFor?.id === msg.id ? (
                     <div style={{ display: "grid", gap: 8 }}>
                       <textarea
                         value={editFor.text}
@@ -1132,13 +1208,80 @@ export function MessageArea({
                         </button>
                       </div>
                     </div>
-                  ) : (
-                    renderTextWithLinks(msg.content)
-                  )}
-                </div>
+                    ) : (
+                      renderTextWithLinks(msg.content)
+                    )}
+                  </div>
+                )}
 
                 {!!msg.edited_at && editFor?.id !== msg.id && (
                   <div style={{ marginTop: 4, fontSize: 11, color: "#8e9297" }}>編集済</div>
+                )}
+
+                {msg.poll && (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      border: "1px solid #40444b",
+                      background: "#2f3136",
+                      borderRadius: 12,
+                      padding: 12,
+                      display: "grid",
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ fontWeight: 900, color: "#ffffff" }}>{msg.poll.question}</div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {msg.poll.options.map((o) => {
+                        const total = totalVotes(msg.poll as any);
+                        const pct = total > 0 ? Math.round((o.votes / total) * 100) : 0;
+                        const active = o.byMe;
+                        return (
+                          <button
+                            key={o.id}
+                            type="button"
+                            disabled={pollVoteBusyId === msg.poll!.id}
+                            onClick={() => {
+                              void (async () => {
+                                if (!msg.poll) return;
+                                setPollVoteBusyId(msg.poll.id);
+                                try {
+                                  const r = await api.votePoll(msg.poll.id, o.id);
+                                  setMessages((prev) => prev.map((m) => (m.id === r.messageId ? { ...m, poll: r.poll } : m)));
+                                } catch (e: any) {
+                                  setError(e?.message ?? "投票に失敗したよ");
+                                } finally {
+                                  setPollVoteBusyId(null);
+                                }
+                              })();
+                            }}
+                            style={{
+                              border: active ? "1px solid rgba(114,137,218,0.9)" : "1px solid #40444b",
+                              background: active ? "rgba(114,137,218,0.18)" : "transparent",
+                              color: "#dcddde",
+                              borderRadius: 10,
+                              padding: "10px 10px",
+                              cursor: pollVoteBusyId === msg.poll!.id ? "not-allowed" : "pointer",
+                              display: "grid",
+                              gap: 6,
+                              textAlign: "left",
+                            }}
+                            title="投票"
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                              <div style={{ fontWeight: 800, overflowWrap: "anywhere" }}>{o.text}</div>
+                              <div style={{ fontSize: 12, color: "#8e9297", flexShrink: 0 }}>
+                                {o.votes}票 {total > 0 ? `(${pct}%)` : ""}
+                              </div>
+                            </div>
+                            <div style={{ height: 6, borderRadius: 999, background: "#202225", overflow: "hidden" }}>
+                              <div style={{ width: `${pct}%`, height: "100%", background: active ? "#7289da" : "#40444b" }} />
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
 
                 {msg.attachments && msg.attachments.length > 0 && (
@@ -1255,7 +1398,7 @@ export function MessageArea({
                     スタンプ
                   </button>
 
-                  {(currentUserId && (msg.author_id === currentUserId || canModerate) && editFor?.id !== msg.id) && (
+                  {(currentUserId && !msg.poll && (msg.author_id === currentUserId || canModerate) && editFor?.id !== msg.id) && (
                     <button
                       onClick={() => openEdit(msg)}
                       style={{
@@ -1325,6 +1468,136 @@ export function MessageArea({
           void pickReaction(id, `sticker:${stickerId}`);
         }}
       />
+
+      {pollCreateOpen && (
+        <Modal
+          title="アンケートを作成"
+          onClose={closePollCreate}
+          footer={
+            <>
+              <button
+                onClick={closePollCreate}
+                disabled={pollBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #40444b",
+                  background: "transparent",
+                  color: "#dcddde",
+                  cursor: pollBusy ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                }}
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={() => void submitPollCreate()}
+                disabled={pollBusy}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#7289da",
+                  color: "#ffffff",
+                  cursor: pollBusy ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  opacity: pollBusy ? 0.7 : 1,
+                }}
+              >
+                {pollBusy ? "作成中…" : "作成"}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <label style={{ display: "grid", gap: 6, fontSize: 12, color: "#8e9297" }}>
+              質問
+              <input
+                id="poll_question_input"
+                value={pollQuestion}
+                onChange={(e) => setPollQuestion(e.target.value)}
+                disabled={pollBusy}
+                style={{
+                  width: "100%",
+                  padding: "12px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #40444b",
+                  background: "#202225",
+                  color: "#dcddde",
+                  fontSize: 14,
+                }}
+              />
+            </label>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontSize: 12, color: "#8e9297", fontWeight: 900 }}>選択肢（2〜6）</div>
+              {pollOptions.map((v, idx) => (
+                <div key={idx} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    value={v}
+                    onChange={(e) =>
+                      setPollOptions((prev) => prev.map((x, i) => (i === idx ? e.target.value : x)))
+                    }
+                    disabled={pollBusy}
+                    placeholder={`選択肢 ${idx + 1}`}
+                    style={{
+                      flex: 1,
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "1px solid #40444b",
+                      background: "#202225",
+                      color: "#dcddde",
+                      fontSize: 13,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPollOptions((prev) => prev.filter((_, i) => i !== idx))}
+                    disabled={pollBusy || pollOptions.length <= 2}
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 8,
+                      border: "1px solid #40444b",
+                      background: "transparent",
+                      color: "#ff7a7a",
+                      cursor: pollBusy || pollOptions.length <= 2 ? "not-allowed" : "pointer",
+                      fontWeight: 900,
+                    }}
+                    title="削除"
+                    aria-label="選択肢を削除"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+
+                <button
+                  type="button"
+                  onClick={() => setPollOptions((prev) => (prev.length >= 6 ? prev : [...prev, ""]))}
+                  disabled={pollBusy || pollOptions.length >= 6}
+                  style={{
+                    justifySelf: "start",
+                    padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #40444b",
+                  background: "transparent",
+                  color: "#dcddde",
+                  cursor: pollBusy || pollOptions.length >= 6 ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  opacity: pollBusy || pollOptions.length >= 6 ? 0.7 : 1,
+                }}
+              >
+                選択肢を追加
+              </button>
+            </div>
+
+            {pollError && <div style={{ color: "#ff7a7a", fontSize: 12 }}>{pollError}</div>}
+          </div>
+        </Modal>
+      )}
 
       {/* メッセージ入力 */}
       <div style={{

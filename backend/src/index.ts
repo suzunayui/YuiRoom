@@ -783,6 +783,27 @@ function validateEmoji(emoji: unknown) {
   return null;
 }
 
+function validatePollQuestion(q: unknown) {
+  if (typeof q !== "string") return "poll_question_must_be_string";
+  const v = q.trim();
+  if (!v) return "poll_question_required";
+  if (v.length > 200) return "poll_question_too_long";
+  return null;
+}
+
+function validatePollOptions(opts: unknown) {
+  if (!Array.isArray(opts)) return "poll_options_must_be_array";
+  const items = opts.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
+  const uniq = Array.from(new Set(items));
+  if (uniq.length < 2) return "poll_options_too_few";
+  if (uniq.length > 6) return "poll_options_too_many";
+  for (const s of uniq) {
+    if (s.length > 80) return "poll_option_too_long";
+    if (/[\r\n]/.test(s)) return "poll_option_no_newlines";
+  }
+  return null;
+}
+
 function normalizeInviteCode(code: string) {
   return code.trim().toLowerCase();
 }
@@ -904,6 +925,65 @@ async function isFirstRegisteredUser(userId: string) {
   const r = await pool.query(`SELECT id FROM users ORDER BY created_at ASC LIMIT 1`);
   if ((r.rowCount ?? 0) === 0) return false;
   return String(r.rows?.[0]?.id || "") === userId;
+}
+
+async function buildPollsByMessageIds(messageIds: string[], viewerUserId: string | null) {
+  const byMessageId: Record<
+    string,
+    | {
+        id: string;
+        question: string;
+        options: Array<{ id: string; text: string; votes: number; byMe: boolean }>;
+      }
+    | undefined
+  > = {};
+  if (!messageIds.length) return byMessageId;
+
+  const polls = await pool.query(
+    `SELECT id, message_id, question
+     FROM polls
+     WHERE message_id = ANY($1::text[])`,
+    [messageIds]
+  );
+  if ((polls.rowCount ?? 0) === 0) return byMessageId;
+
+  const pollIds = polls.rows.map((r) => String(r.id));
+
+  const votes = await pool.query(
+    `SELECT o.poll_id, o.id AS option_id, o.text, o.position,
+            COUNT(v.user_id)::int AS votes,
+            BOOL_OR(v.user_id = $2) AS by_me
+     FROM poll_options o
+     LEFT JOIN poll_votes v
+       ON v.option_id = o.id
+     WHERE o.poll_id = ANY($1::text[])
+     GROUP BY o.poll_id, o.id, o.text, o.position
+     ORDER BY o.poll_id, o.position ASC`,
+    [pollIds, viewerUserId || ""]
+  );
+
+  const optionsByPollId: Record<string, Array<{ id: string; text: string; votes: number; byMe: boolean }>> = {};
+  for (const row of votes.rows) {
+    const pollId = String(row.poll_id);
+    (optionsByPollId[pollId] ||= []).push({
+      id: String(row.option_id),
+      text: String(row.text),
+      votes: Number(row.votes ?? 0) || 0,
+      byMe: Boolean(row.by_me),
+    });
+  }
+
+  for (const p of polls.rows) {
+    const pollId = String(p.id);
+    const messageId = String(p.message_id);
+    byMessageId[messageId] = {
+      id: pollId,
+      question: String(p.question),
+      options: optionsByPollId[pollId] ?? [],
+    };
+  }
+
+  return byMessageId;
 }
 
 type ParsedAttachmentResult =
@@ -2690,6 +2770,8 @@ app.get("/channels/:channelId/messages", requireAuth, async (req, res) => {
     }
   }
 
+  const pollsByMessageId = await buildPollsByMessageIds(messageIds, viewer);
+
   res.json({
     items: rows.map((m) => ({
       id: m.id,
@@ -2705,6 +2787,7 @@ app.get("/channels/:channelId/messages", requireAuth, async (req, res) => {
       reply: m.reply_to ? repliesById[m.reply_to] ?? null : null,
       attachments: attachmentsByMessage[m.id] ?? [],
       reactions: Object.values(reactionsByMessage[m.id] ?? {}),
+      poll: pollsByMessageId[m.id] ?? null,
     })),
     hasMore,
   });
@@ -2857,6 +2940,153 @@ app.post(
     await pool.query("ROLLBACK");
     throw e;
   }
+  }
+);
+
+// create poll (creates a message)
+app.post(
+  "/channels/:channelId/polls",
+  requireAuth,
+  rateLimit({ name: "poll_create", windowMs: 60_000, max: 10, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const channelId = String(req.params.channelId || "");
+    if (!channelId) return res.status(400).json({ error: "channelId_required" });
+
+    const me = (req as any).userId as string;
+
+    const ch = await pool.query(`SELECT id, room_id FROM channels WHERE id=$1`, [channelId]);
+    if (ch.rowCount === 0) return res.status(404).json({ error: "channel_not_found" });
+    const roomId = String(ch.rows?.[0]?.room_id || "");
+    if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
+    if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+
+    const questionErr = validatePollQuestion(req.body?.question);
+    if (questionErr) return res.status(400).json({ error: questionErr });
+    const optsErr = validatePollOptions(req.body?.options);
+    if (optsErr) return res.status(400).json({ error: optsErr });
+
+    const question = String(req.body.question).trim();
+    const options = Array.from(
+      new Set((req.body.options as any[]).map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean))
+    );
+
+    const u = await pool.query(`SELECT display_name, (avatar_data IS NOT NULL) AS has FROM users WHERE id=$1`, [me]);
+    if ((u.rowCount ?? 0) === 0) return res.status(404).json({ error: "user_not_found" });
+    const authorName = String(u.rows[0].display_name || me);
+    const authorHasAvatar = !!u.rows?.[0]?.has;
+
+    const messageId = randomUUID();
+    const pollId = randomUUID();
+
+    await pool.query("BEGIN");
+    try {
+      await pool.query(
+        `INSERT INTO messages (id, channel_id, author, author_id, author_name, content)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [messageId, channelId, me, me, authorName, question]
+      );
+      await pool.query(
+        `INSERT INTO polls (id, message_id, question, created_by)
+         VALUES ($1, $2, $3, $4)`,
+        [pollId, messageId, question, me]
+      );
+
+      const optionIds: string[] = [];
+      for (let i = 0; i < options.length; i++) {
+        const oid = randomUUID();
+        optionIds.push(oid);
+        await pool.query(
+          `INSERT INTO poll_options (id, poll_id, text, position)
+           VALUES ($1, $2, $3, $4)`,
+          [oid, pollId, options[i], i]
+        );
+      }
+
+      await pool.query("COMMIT");
+
+      const pollPayload = {
+        id: pollId,
+        question,
+        options: optionIds.map((id, i) => ({ id, text: options[i], votes: 0, byMe: false })),
+      };
+
+      const payload = {
+        id: messageId,
+        channel_id: channelId,
+        author_id: me,
+        author: authorName,
+        author_has_avatar: authorHasAvatar,
+        author_is_banned: false,
+        content: question,
+        created_at: new Date().toISOString(),
+        edited_at: null,
+        reply_to: null,
+        reply: null,
+        attachments: [],
+        reactions: [],
+        poll: pollPayload,
+      };
+
+      wsBroadcastChannel(channelId, { type: "channel_message_created", channelId, message: payload });
+      res.status(201).json(payload);
+    } catch (e) {
+      await pool.query("ROLLBACK");
+      throw e;
+    }
+  }
+);
+
+// vote poll
+app.post(
+  "/polls/:pollId/vote",
+  requireAuth,
+  rateLimit({ name: "poll_vote", windowMs: 10_000, max: 60, key: rateKeyByUserOrIp }),
+  async (req, res) => {
+    const me = (req as any).userId as string;
+    const pollId = String(req.params.pollId || "");
+    if (!pollId) return res.status(400).json({ error: "pollId_required" });
+
+    const optionId = typeof req.body?.optionId === "string" ? String(req.body.optionId) : "";
+    if (!optionId) return res.status(400).json({ error: "optionId_required" });
+
+    const p = await pool.query(
+      `SELECT p.id, p.message_id, m.channel_id, c.room_id
+       FROM polls p
+       JOIN messages m ON m.id = p.message_id
+       JOIN channels c ON c.id = m.channel_id
+       WHERE p.id=$1`,
+      [pollId]
+    );
+    if ((p.rowCount ?? 0) === 0) return res.status(404).json({ error: "poll_not_found" });
+    const messageId = String(p.rows?.[0]?.message_id || "");
+    const channelId = String(p.rows?.[0]?.channel_id || "");
+    const roomId = String(p.rows?.[0]?.room_id || "");
+
+    if (roomId && !(await assertNotBannedFromRoom(roomId, me, res))) return;
+    if (roomId && !(await assertRoomMember(roomId, me, res))) return;
+
+    const opt = await pool.query(
+      `SELECT id, text FROM poll_options WHERE id=$1 AND poll_id=$2`,
+      [optionId, pollId]
+    );
+    if ((opt.rowCount ?? 0) === 0) return res.status(404).json({ error: "poll_option_not_found" });
+
+    await pool.query("BEGIN");
+    try {
+      await pool.query(`DELETE FROM poll_votes WHERE poll_id=$1 AND user_id=$2`, [pollId, me]);
+      await pool.query(`INSERT INTO poll_votes (poll_id, user_id, option_id) VALUES ($1, $2, $3)`, [pollId, me, optionId]);
+      await pool.query("COMMIT");
+    } catch (e) {
+      await pool.query("ROLLBACK");
+      throw e;
+    }
+
+    const pollsByMessageId = await buildPollsByMessageIds([messageId], me);
+    const pollPayload = pollsByMessageId[messageId];
+    if (!pollPayload) return res.status(500).json({ error: "poll_build_failed" });
+
+    wsBroadcastChannel(channelId, { type: "poll_updated", channelId, messageId, poll: pollPayload });
+    res.json({ pollId, messageId, poll: pollPayload });
   }
 );
 

@@ -239,6 +239,10 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- Backward-compatible migration for existing deployments (CREATE TABLE won't add columns).
+    ALTER TABLE stickers
+      ADD COLUMN IF NOT EXISTS room_id TEXT REFERENCES rooms(id) ON DELETE CASCADE;
+
     CREATE INDEX IF NOT EXISTS idx_stickers_owner_created_at
       ON stickers(owner_id, created_at DESC);
 

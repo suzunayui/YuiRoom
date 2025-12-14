@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useLatestRef } from "./useLatestRef";
 
 export function useHomeAutoRefresh(args: {
   authed: boolean;
@@ -8,17 +9,19 @@ export function useHomeAutoRefresh(args: {
   subscribeHome: (cb: () => void) => () => void;
 }) {
   const { authed, selectedRoomId, homeId, loadHome, subscribeHome } = args;
+  const loadHomeRef = useLatestRef(loadHome);
+  const subscribeHomeRef = useLatestRef(subscribeHome);
 
   useEffect(() => {
     if (!authed) return;
     if (selectedRoomId !== homeId) return;
-    void loadHome();
-  }, [authed, selectedRoomId, homeId, loadHome]);
+    void loadHomeRef.current();
+  }, [authed, selectedRoomId, homeId, loadHomeRef]);
 
   useEffect(() => {
     if (!authed) return;
     if (selectedRoomId !== homeId) return;
-    const unsub = subscribeHome(() => void loadHome());
+    const unsub = subscribeHomeRef.current(() => void loadHomeRef.current());
     return () => {
       try {
         unsub();
@@ -26,6 +29,5 @@ export function useHomeAutoRefresh(args: {
         // ignore
       }
     };
-  }, [authed, selectedRoomId, homeId, loadHome, subscribeHome]);
+  }, [authed, selectedRoomId, homeId, loadHomeRef, subscribeHomeRef]);
 }
-

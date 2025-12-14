@@ -143,6 +143,15 @@ function writeSavedUserId(userId: string | null) {
 
 const HOME_ID = "__home__";
 
+async function hasServerAvatar(userId: string): Promise<boolean> {
+  try {
+    const res = await fetch(api.userAvatarUrl(userId), { method: "HEAD" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -198,6 +207,8 @@ export default function App() {
   const [isNarrow, setIsNarrow] = useState(false);
   const [mobileDrawer, setMobileDrawer] = useState<null | "rooms" | "nav" | "members">(null);
   const pendingInviteRef = useRef<string | null>(null);
+  const [currentUserHasServerAvatar, setCurrentUserHasServerAvatar] = useState(false);
+  const [currentUserAvatarVersion, setCurrentUserAvatarVersion] = useState(0);
 
   const [rememberUserId, setRememberUserId] = useState(true);
 
@@ -226,6 +237,13 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState<string>("");
   const [avatarDataUrl, setAvatarDataUrl] = useState<string>("");
+
+  const currentUserAvatarUrl =
+    avatarDataUrl?.trim()
+      ? avatarDataUrl
+      : currentUserId && currentUserHasServerAvatar
+        ? `${api.userAvatarUrl(currentUserId)}?v=${currentUserAvatarVersion}`
+        : null;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsName, setSettingsName] = useState("");
@@ -1322,6 +1340,11 @@ export default function App() {
       } catch {
         setAvatarDataUrl("");
       }
+      setCurrentUserAvatarVersion(0);
+      void (async () => {
+        const has = await hasServerAvatar(ok.userId);
+        setCurrentUserHasServerAvatar(has);
+      })();
 
       setAuthed(true);
       await loadRooms();
@@ -1365,6 +1388,11 @@ export default function App() {
       } catch {
         setAvatarDataUrl("");
       }
+      setCurrentUserAvatarVersion(0);
+      void (async () => {
+        const has = await hasServerAvatar(ok.userId);
+        setCurrentUserHasServerAvatar(has);
+      })();
 
       setAuthed(true);
       await loadRooms();
@@ -1380,6 +1408,8 @@ export default function App() {
     setCurrentUserId(null);
     setDisplayName("");
     setAvatarDataUrl("");
+    setCurrentUserHasServerAvatar(false);
+    setCurrentUserAvatarVersion(0);
     api.setAuthToken(null);
     realtime.close();
     setSelectedRoomId(null);
@@ -1454,6 +1484,9 @@ export default function App() {
       }
       return;
     }
+
+    setCurrentUserHasServerAvatar(!!nextAvatar);
+    setCurrentUserAvatarVersion((v) => v + 1);
     setSettingsOpen(false);
   }
 
@@ -2301,7 +2334,7 @@ export default function App() {
                   : undefined
               }
               currentUserName={displayName || currentUserId || "user"}
-              currentUserAvatarUrl={avatarDataUrl || null}
+              currentUserAvatarUrl={currentUserAvatarUrl}
               onOpenSettings={currentUserId ? openSettings : undefined}
             />
           ) : null}
@@ -3262,7 +3295,7 @@ export default function App() {
                       : undefined
                   }
                   currentUserName={displayName || currentUserId || "user"}
-                  currentUserAvatarUrl={avatarDataUrl || null}
+                  currentUserAvatarUrl={currentUserAvatarUrl}
                   onOpenSettings={currentUserId ? () => { setMobileDrawer(null); openSettings(); } : undefined}
                 />
               ) : (

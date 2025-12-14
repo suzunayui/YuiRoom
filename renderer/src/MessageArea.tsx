@@ -13,6 +13,7 @@ type Props = {
   currentUserId?: string | null;
   canModerate?: boolean;
   mentionCandidates?: Array<{ userId: string; displayName: string }>;
+  enterKeySends?: boolean;
   focusMessageId?: string | null;
   focusMessageNonce?: number;
   onJumpToMessage?: (args: { channelId: string; messageId: string }) => void;
@@ -211,6 +212,7 @@ export function MessageArea({
   currentUserId,
   canModerate,
   mentionCandidates,
+  enterKeySends = true,
   focusMessageId,
   focusMessageNonce,
   onJumpToMessage,
@@ -250,7 +252,7 @@ export function MessageArea({
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const mentionRangeRef = useRef<{ start: number; end: number } | null>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -652,7 +654,7 @@ export function MessageArea({
     }
   }
 
-  async function handlePaste(e: React.ClipboardEvent<HTMLInputElement>) {
+  async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
 
@@ -1409,7 +1411,7 @@ export function MessageArea({
               </div>
             )}
 
-            <input
+            <textarea
               ref={textInputRef}
               placeholder={`#${selectedChannelName || "channel"} にメッセージを送信（画像は貼り付け/添付OK）`}
               value={text}
@@ -1458,7 +1460,11 @@ export function MessageArea({
                   }
                 }
 
-                if (e.key === "Enter") send();
+                if (e.key !== "Enter" || (e as any).isComposing) return;
+                const shouldSend = enterKeySends ? !e.shiftKey : e.shiftKey;
+                if (!shouldSend) return;
+                e.preventDefault();
+                send();
               }}
               disabled={!selectedChannelId || sending}
               style={{
@@ -1470,6 +1476,11 @@ export function MessageArea({
                 color: "#dcddde",
                 fontSize: 14,
                 opacity: !selectedChannelId ? 0.6 : 1,
+                minHeight: 44,
+                maxHeight: 160,
+                resize: "none",
+                lineHeight: 1.4,
+                overflowY: "auto",
               }}
             />
           </div>

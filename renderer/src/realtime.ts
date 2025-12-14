@@ -28,6 +28,43 @@ type SubKey = string;
 let ws: WebSocket | null = null;
 let wsToken: string | null = null;
 let opening = false;
+let reconnectTimer: number | null = null;
+let reconnectDelayMs = 750;
+
+function hasAnyHandlers() {
+  return (
+    channelHandlers.size > 0 ||
+    channelReactionHandlers.size > 0 ||
+    channelPollHandlers.size > 0 ||
+    channelDeleteHandlers.size > 0 ||
+    channelUpdateHandlers.size > 0 ||
+    dmHandlers.size > 0 ||
+    dmReactionHandlers.size > 0 ||
+    dmErrorHandlers.size > 0 ||
+    homeHandlers.size > 0 ||
+    helloHandlers.size > 0 ||
+    roomBannedHandlers.size > 0 ||
+    roomUnbannedHandlers.size > 0 ||
+    roomBanChangedHandlers.size > 0 ||
+    roomLeftHandlers.size > 0 ||
+    roomKickedHandlers.size > 0 ||
+    roomMemberChangedHandlers.size > 0 ||
+    roomPresenceHandlers.size > 0
+  );
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer != null) return;
+  if (!api.getAuthToken()) return;
+  if (!hasAnyHandlers()) return;
+
+  const delay = reconnectDelayMs;
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    ensureConnected();
+    reconnectDelayMs = Math.min(15_000, Math.floor(reconnectDelayMs * 1.6));
+  }, delay);
+}
 
 const channelHandlers = new Map<SubKey, Set<Handler<any>>>();
 const channelReactionHandlers = new Map<SubKey, Set<Handler<{ messageId: string; reactions: any }>>>();
@@ -95,13 +132,29 @@ function ensureConnected() {
 
   ws.addEventListener("open", () => {
     opening = false;
+    reconnectDelayMs = 750;
+    if (reconnectTimer != null) {
+      try {
+        clearTimeout(reconnectTimer);
+      } catch {
+        // ignore
+      }
+      reconnectTimer = null;
+    }
     // re-subscribe
-    const channelIds = new Set<string>([...channelHandlers.keys(), ...channelReactionHandlers.keys(), ...channelPollHandlers.keys()]);
+    const channelIds = new Set<string>([
+      ...channelHandlers.keys(),
+      ...channelReactionHandlers.keys(),
+      ...channelPollHandlers.keys(),
+      ...channelDeleteHandlers.keys(),
+      ...channelUpdateHandlers.keys(),
+    ]);
     for (const channelId of channelIds) wsSend({ type: "subscribe", channelId });
     const threadIds = new Set<string>([...dmHandlers.keys(), ...dmReactionHandlers.keys()]);
     for (const threadId of threadIds) {
       wsSend({ type: "subscribe_dm", threadId });
     }
+    if (homeHandlers.size > 0) wsSend({ type: "subscribe_home" });
   });
 
   ws.addEventListener("message", (e) => {
@@ -260,6 +313,7 @@ function ensureConnected() {
   ws.addEventListener("close", () => {
     opening = false;
     ws = null;
+    scheduleReconnect();
   });
 
   ws.addEventListener("error", () => {
@@ -268,6 +322,15 @@ function ensureConnected() {
 }
 
 function closeWs() {
+  if (reconnectTimer != null) {
+    try {
+      clearTimeout(reconnectTimer);
+    } catch {
+      // ignore
+    }
+    reconnectTimer = null;
+  }
+  reconnectDelayMs = 750;
   try {
     ws?.close();
   } catch {
@@ -350,7 +413,17 @@ export const realtime = {
       const s = channelPollHandlers.get(key);
       if (!s) return;
       s.delete(onUpdate as any);
-      if (s.size === 0) channelPollHandlers.delete(key);
+      if (s.size === 0) {
+        channelPollHandlers.delete(key);
+        if (
+          !channelHandlers.has(key) &&
+          !channelReactionHandlers.has(key) &&
+          !channelDeleteHandlers.has(key) &&
+          !channelUpdateHandlers.has(key)
+        ) {
+          wsSend({ type: "unsubscribe", channelId: key });
+        }
+      }
     };
   },
 
@@ -358,17 +431,32 @@ export const realtime = {
     ensureConnected();
 
     let set = channelDeleteHandlers.get(channelId);
+    const first = !set;
     if (!set) {
       set = new Set();
       channelDeleteHandlers.set(channelId, set);
     }
     set.add(onDelete);
 
+    if (first && !channelHandlers.has(channelId) && !channelReactionHandlers.has(channelId) && !channelPollHandlers.has(channelId)) {
+      wsSend({ type: "subscribe", channelId });
+    }
+
     return () => {
       const s = channelDeleteHandlers.get(channelId);
       if (!s) return;
       s.delete(onDelete);
-      if (s.size === 0) channelDeleteHandlers.delete(channelId);
+      if (s.size === 0) {
+        channelDeleteHandlers.delete(channelId);
+        if (
+          !channelHandlers.has(channelId) &&
+          !channelReactionHandlers.has(channelId) &&
+          !channelPollHandlers.has(channelId) &&
+          !channelUpdateHandlers.has(channelId)
+        ) {
+          wsSend({ type: "unsubscribe", channelId });
+        }
+      }
     };
   },
 
@@ -376,17 +464,32 @@ export const realtime = {
     ensureConnected();
 
     let set = channelUpdateHandlers.get(channelId);
+    const first = !set;
     if (!set) {
       set = new Set();
       channelUpdateHandlers.set(channelId, set);
     }
     set.add(onUpdate);
 
+    if (first && !channelHandlers.has(channelId) && !channelReactionHandlers.has(channelId) && !channelPollHandlers.has(channelId)) {
+      wsSend({ type: "subscribe", channelId });
+    }
+
     return () => {
       const s = channelUpdateHandlers.get(channelId);
       if (!s) return;
       s.delete(onUpdate);
-      if (s.size === 0) channelUpdateHandlers.delete(channelId);
+      if (s.size === 0) {
+        channelUpdateHandlers.delete(channelId);
+        if (
+          !channelHandlers.has(channelId) &&
+          !channelReactionHandlers.has(channelId) &&
+          !channelPollHandlers.has(channelId) &&
+          !channelDeleteHandlers.has(channelId)
+        ) {
+          wsSend({ type: "unsubscribe", channelId });
+        }
+      }
     };
   },
 
